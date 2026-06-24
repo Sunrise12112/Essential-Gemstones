@@ -22,6 +22,7 @@ const SECTION_LABELS = {
   sectionOrder: 'Section order',
   sectionVisibility: 'Section show/hide',
   manage_admins: 'Manage admins',
+  manage_subscribers: 'Newsletter subscribers',
 };
 
 export default function AdminsManager({ currentUser }) {
@@ -117,7 +118,7 @@ export default function AdminsManager({ currentUser }) {
   };
 
   if (loading) {
-    return <div className="flex items-center gap-2 text-[#6b4f3a] text-sm"><RefreshCw className="w-4 h-4 animate-spin" /> Loading admins\u2026</div>;
+    return <div className="flex items-center gap-2 text-[#6b4f3a] text-sm"><RefreshCw className="w-4 h-4 animate-spin" /> Loading admins…</div>;
   }
 
   return (

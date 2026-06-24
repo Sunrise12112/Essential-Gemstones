@@ -1,10 +1,15 @@
 """Essential Gemstones CMS Backend with multi-admin & permissions."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import smtplib
 import uuid
 from datetime import datetime, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formataddr
 from pathlib import Path
 from typing import Any, Optional
 
@@ -22,7 +27,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from starlette.middleware.cors import CORSMiddleware
 
 ROOT_DIR = Path(__file__).parent
@@ -45,8 +50,14 @@ SECTION_PERMS = [
     "navbar", "hero", "products", "story", "promise", "chakra", "stats",
     "lavaMeaning", "founder", "craft", "faq", "gallery", "vip", "footer",
 ]
-META_PERMS = ["sectionOrder", "sectionVisibility", "manage_admins"]
+META_PERMS = ["sectionOrder", "sectionVisibility", "manage_admins", "manage_subscribers"]
 ALL_PERMS = SECTION_PERMS + META_PERMS
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
+SMTP_FROM_NAME = os.environ.get("SMTP_FROM_NAME", "Essential Gemstones")
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -508,6 +519,163 @@ async def list_permissions() -> dict:
         "metaPermissions": META_PERMS,
         "all": ALL_PERMS,
     }
+
+
+# ---------------- EMAIL ---------------- #
+
+
+def _send_email_sync(to_email: str, subject: str, html: str, reply_to: Optional[str] = None) -> None:
+    if not SMTP_USER or not SMTP_PASS:
+        raise RuntimeError("SMTP credentials not configured")
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = formataddr((SMTP_FROM_NAME, SMTP_USER))
+    msg["To"] = to_email
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    msg.attach(MIMEText(html, "html", "utf-8"))
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(SMTP_USER, SMTP_PASS)
+        server.send_message(msg)
+
+
+async def send_email(to_email: str, subject: str, html: str, reply_to: Optional[str] = None) -> None:
+    await asyncio.to_thread(_send_email_sync, to_email, subject, html, reply_to)
+
+
+def _admin_notify_html(email: str, when: str) -> str:
+    return f"""
+    <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:32px;background:#faf6f0;color:#2c2420;border-radius:16px;">
+      <h2 style="font-family:Georgia,serif;color:#1a1410;margin:0 0 8px;">New newsletter subscriber</h2>
+      <p style="color:#6b4f3a;margin:0 0 24px;">Someone just joined the Essential Gemstones family.</p>
+      <div style="background:#fff;border:1px solid #e8dfd1;border-radius:12px;padding:20px;">
+        <p style="margin:0 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.15em;color:#8b6b4f;">Email</p>
+        <p style="margin:0 0 18px;font-size:18px;font-weight:600;color:#1a1410;">{email}</p>
+        <p style="margin:0 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.15em;color:#8b6b4f;">When</p>
+        <p style="margin:0;color:#3d3128;">{when}</p>
+      </div>
+      <p style="margin:24px 0 0;color:#8b6b4f;font-size:13px;">Sent automatically by your Essential Gemstones site.</p>
+    </div>
+    """
+
+
+def _welcome_html(brand: str, founder: str) -> str:
+    safe_brand = brand or "Essential Gemstones"
+    safe_founder = founder or "Luca"
+    return f"""
+    <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:32px;background:#faf6f0;color:#2c2420;border-radius:16px;">
+      <p style="font-size:12px;text-transform:uppercase;letter-spacing:.3em;color:#8b6b4f;margin:0 0 12px;">Welcome to the family</p>
+      <h1 style="font-family:Georgia,serif;font-size:32px;color:#1a1410;margin:0 0 16px;line-height:1.15;">Thank you for joining, friend.</h1>
+      <p style="color:#3d3128;line-height:1.7;margin:0 0 16px;">I\u2019m so glad you\u2019re here. You\u2019ve just joined a small, growing community of crystal lovers and nature seekers who care about meaningful, handmade things.</p>
+      <p style="color:#3d3128;line-height:1.7;margin:0 0 16px;">As a subscriber, you\u2019ll be the first to know about new collections, restocks, behind-the-scenes stories from the studio, and special offers \u2014 only for our inner circle.</p>
+      <p style="color:#3d3128;line-height:1.7;margin:0 0 32px;">Until then, take a deep breath, hold a stone in your hand, and remember: you carry something powerful within you.</p>
+      <div style="border-top:1px solid #e8dfd1;padding-top:24px;">
+        <p style="font-family:Georgia,serif;font-style:italic;color:#6b4f3a;font-size:18px;margin:0 0 4px;">With gratitude,</p>
+        <p style="font-family:Georgia,serif;color:#1a1410;font-size:20px;margin:0;">{safe_founder}</p>
+        <p style="font-size:12px;text-transform:uppercase;letter-spacing:.2em;color:#8b6b4f;margin:4px 0 0;">Founder \u2022 {safe_brand}</p>
+      </div>
+    </div>
+    """
+
+
+# ---------------- SUBSCRIBERS ---------------- #
+
+
+class SubscribeIn(BaseModel):
+    email: EmailStr
+
+
+@app.post("/api/subscribe")
+async def subscribe(payload: SubscribeIn) -> dict:
+    email = str(payload.email).strip().lower()
+    site = await get_site_doc()
+    footer = site.get("footer") or {}
+    admin_email = (footer.get("email") or SMTP_USER or "").strip()
+    brand = footer.get("brand") or "Essential Gemstones"
+    founder = (site.get("founder") or {}).get("title", "Luca")
+    founder_name = founder.replace("Hi, I\u2019m ", "").replace("Hi, I'm ", "").strip() or "Luca"
+
+    now_iso = datetime.utcnow().isoformat()
+    existing = await db.subscribers.find_one({"email": email})
+    already = existing is not None
+    if not already:
+        await db.subscribers.insert_one({
+            "_id": str(uuid.uuid4()),
+            "email": email,
+            "createdAt": now_iso,
+        })
+
+    when_display = datetime.utcnow().strftime("%B %d, %Y at %H:%M UTC")
+    notify_sent = False
+    welcome_sent = False
+    error: Optional[str] = None
+    try:
+        if admin_email:
+            await send_email(
+                admin_email,
+                f"New subscriber: {email}",
+                _admin_notify_html(email, when_display),
+                reply_to=email,
+            )
+            notify_sent = True
+        if not already:
+            await send_email(
+                email,
+                f"Welcome to {brand}",
+                _welcome_html(brand, founder_name),
+            )
+            welcome_sent = True
+    except Exception as exc:  # noqa: BLE001
+        logger_local = logging.getLogger(__name__)
+        logger_local.exception("Email send failed: %s", exc)
+        error = str(exc)
+
+    return {
+        "ok": True,
+        "alreadySubscribed": already,
+        "notifySent": notify_sent,
+        "welcomeSent": welcome_sent,
+        "error": error,
+    }
+
+
+@app.get("/api/admin/subscribers")
+async def list_subscribers(admin: dict = Depends(require_admin)) -> list[dict]:
+    if not (admin.get("isSuper") or "manage_subscribers" in (admin.get("permissions") or [])):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    out: list[dict] = []
+    cursor = db.subscribers.find().sort("createdAt", -1)
+    async for doc in cursor:
+        out.append({"id": doc["_id"], "email": doc["email"], "createdAt": doc.get("createdAt")})
+    return out
+
+
+@app.delete("/api/admin/subscribers/{sub_id}")
+async def delete_subscriber(sub_id: str, admin: dict = Depends(require_admin)) -> dict:
+    if not (admin.get("isSuper") or "manage_subscribers" in (admin.get("permissions") or [])):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    res = await db.subscribers.delete_one({"_id": sub_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Subscriber not found")
+    return {"ok": True}
+
+
+@app.post("/api/admin/test-email")
+async def test_email(payload: dict, admin: dict = Depends(require_admin)) -> dict:
+    """Send a quick test email to verify SMTP credentials work."""
+    if not admin.get("isSuper"):
+        raise HTTPException(status_code=403, detail="Super admin only")
+    to = str(payload.get("to") or "").strip()
+    if not to:
+        raise HTTPException(status_code=400, detail="Missing 'to'")
+    try:
+        await send_email(to, "Test email from Essential Gemstones", _welcome_html("Essential Gemstones", "Luca"))
+        return {"ok": True}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ---------------- MIDDLEWARE ---------------- #

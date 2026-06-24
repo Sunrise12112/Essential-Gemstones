@@ -1,19 +1,34 @@
 import React, { useState } from 'react';
-import { Mail, Heart, Gem, Instagram, Facebook } from 'lucide-react';
+import { Mail, Heart, Gem, Instagram, Facebook, Loader2 } from 'lucide-react';
 import { useToast } from '../hooks/use-toast';
 import { useSite } from '../context/SiteContext';
+import api from '../lib/api';
 
 export default function Footer() {
   const { site } = useSite();
   const f = site.footer || {};
   const [email, setEmail] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const { toast } = useToast();
 
-  const onSubmit = (e) => {
+  const onSubmit = async (e) => {
     e.preventDefault();
     if (!email) return;
-    toast({ title: 'Welcome to the family', description: `We\u2019ll keep ${email} in the loop on new collections and stories.` });
-    setEmail('');
+    setSubmitting(true);
+    try {
+      const { data } = await api.post('/subscribe', { email });
+      if (data.alreadySubscribed) {
+        toast({ title: 'You\u2019re already with us', description: `${email} is already on the list \u2014 thank you!` });
+      } else {
+        toast({ title: 'Welcome to the family', description: data.welcomeSent ? 'Check your inbox \u2014 we just sent you a note.' : 'You\u2019re on the list!' });
+      }
+      setEmail('');
+    } catch (err) {
+      const msg = err?.response?.data?.detail || 'Something went wrong. Please try again.';
+      toast({ title: 'Could not subscribe', description: String(msg), variant: 'destructive' });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -36,8 +51,11 @@ export default function Footer() {
             {f.newsletterKicker && <p className="text-xs tracking-[0.3em] uppercase text-[#c9a876] mb-4">{f.newsletterKicker}</p>}
             {f.newsletterTitle && <h3 className="font-serif text-2xl md:text-3xl text-[#faf6f0] mb-5 leading-tight">{f.newsletterTitle}</h3>}
             <form onSubmit={onSubmit} className="flex flex-col sm:flex-row gap-3 mb-6">
-              <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="your@email.com" className="flex-1 px-5 py-3.5 bg-transparent border border-[#3d2f24] focus:border-[#c9a876] rounded-full text-[#faf6f0] placeholder:text-[#7a6a55] outline-none transition-colors" />
-              <button type="submit" className="px-7 py-3.5 bg-[#c9a876] text-[#1a1410] rounded-full text-sm tracking-wider uppercase font-medium hover:bg-[#d6b885] transition-colors">Subscribe</button>
+              <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="your@email.com" disabled={submitting} className="flex-1 px-5 py-3.5 bg-transparent border border-[#3d2f24] focus:border-[#c9a876] rounded-full text-[#faf6f0] placeholder:text-[#7a6a55] outline-none transition-colors disabled:opacity-60" />
+              <button type="submit" disabled={submitting} className="px-7 py-3.5 bg-[#c9a876] text-[#1a1410] rounded-full text-sm tracking-wider uppercase font-medium hover:bg-[#d6b885] transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-2">
+                {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                {submitting ? 'Sending\u2026' : 'Subscribe'}
+              </button>
             </form>
             {f.email && <p className="text-sm text-[#bfae95]">Email us at <a href={`mailto:${f.email}`} className="text-[#c9a876] hover:underline">{f.email}</a></p>}
             {(f.donateTitle || f.donateUrl) && (

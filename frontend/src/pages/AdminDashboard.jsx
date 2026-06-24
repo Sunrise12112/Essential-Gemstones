@@ -7,6 +7,7 @@ import { useToast } from '../hooks/use-toast';
 import { Field, TextInput, TextArea, SectionCard, ListReorder } from '../components/admin/FormControls';
 import MediaPicker from '../components/admin/MediaPicker';
 import AdminsManager from '../components/admin/AdminsManager';
+import SubscribersManager from '../components/admin/SubscribersManager';
 import { Switch } from '../components/ui/switch';
 
 const SECTION_LABELS = {
@@ -149,6 +150,13 @@ export default function AdminDashboard() {
         {me?.isSuper && (
           <SectionCard title="Manage Admins" open={openSections.admins} onToggle={() => toggle('admins')}>
             <AdminsManager currentUser={me} />
+          </SectionCard>
+        )}
+
+        {/* Subscribers */}
+        {can('manage_subscribers') && (
+          <SectionCard title="Newsletter Subscribers" open={openSections.subscribers} onToggle={() => toggle('subscribers')}>
+            <SubscribersManager isSuper={!!me?.isSuper} />
           </SectionCard>
         )}
 
