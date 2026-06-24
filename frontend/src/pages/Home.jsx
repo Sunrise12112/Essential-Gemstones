@@ -1,4 +1,5 @@
 import React from 'react';
+import { useSite } from '../context/SiteContext';
 import Navbar from '../components/Navbar';
 import Hero from '../components/Hero';
 import Products from '../components/Products';
@@ -14,22 +15,34 @@ import Gallery from '../components/Gallery';
 import VIP from '../components/VIP';
 import Footer from '../components/Footer';
 
+const REGISTRY = {
+  hero: Hero,
+  products: Products,
+  story: Story,
+  promise: Promise,
+  chakra: Chakra,
+  stats: Stats,
+  lavaMeaning: LavaMeaning,
+  founder: Founder,
+  craft: Craft,
+  faq: FAQ,
+  gallery: Gallery,
+  vip: VIP,
+};
+
 export default function Home() {
+  const { site } = useSite();
+  const order = site.sectionOrder || Object.keys(REGISTRY);
+  const vis = site.sectionVisibility || {};
   return (
     <div className="min-h-screen bg-[#faf6f0]">
       <Navbar />
-      <Hero />
-      <Products />
-      <Story />
-      <Promise />
-      <Chakra />
-      <Stats />
-      <LavaMeaning />
-      <Founder />
-      <Craft />
-      <FAQ />
-      <Gallery />
-      <VIP />
+      {order.map((key) => {
+        const C = REGISTRY[key];
+        if (!C) return null;
+        if (vis[key] === false) return null;
+        return <C key={key} />;
+      })}
       <Footer />
     </div>
   );

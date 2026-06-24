@@ -101,3 +101,170 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "Essential Gemstones CMS - Test all backend API endpoints"
+
+backend:
+  - task: "Root API endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/ returns correct response {'message': 'Essential Gemstones API'}. Tested successfully."
+
+  - task: "Public site content endpoint with auto-seeding"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/site returns full site content with all 16 expected keys (navbar, hero, products, story, promise, chakra, stats, lavaMeaning, founder, craft, faq, gallery, vip, footer, sectionOrder, sectionVisibility). Auto-seeding works correctly on first call. sectionOrder contains 12 items as expected."
+
+  - task: "Admin login with valid password"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/admin/login with password '1121211221' returns JWT token successfully. Token length: 147 characters."
+
+  - task: "Admin login with invalid password"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/admin/login with wrong password correctly returns 401 Unauthorized."
+
+  - task: "Admin authentication verification without token"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/admin/me without token correctly returns 401 Unauthorized."
+
+  - task: "Admin authentication verification with valid token"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/admin/me with valid Bearer token returns {'ok': True}. Authentication working correctly."
+
+  - task: "Site content update without authentication"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "PUT /api/site without token correctly returns 401 Unauthorized. Protected endpoint working as expected."
+
+  - task: "Site content update with authentication and persistence"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "PUT /api/site with valid token successfully updates site content. Partial update (hero.kicker) persisted correctly to MongoDB. Verified by subsequent GET /api/site call showing the updated value."
+
+  - task: "File upload without authentication"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/upload without token correctly returns 401 Unauthorized. Protected endpoint working as expected."
+
+  - task: "File upload with authentication and retrieval"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/upload with valid token successfully uploads PNG image. Returns correct response with url, kind, and size fields. File retrieval via GET /api/uploads/{uuid}.png returns 200 with correct binary content (67 bytes). Upload and serving functionality working correctly."
+
+  - task: "File upload validation for unsupported file types"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/upload with unsupported file type (.txt) correctly returns 400 Bad Request. File type validation working as expected."
+
+frontend:
+  - task: "Frontend integration"
+    implemented: false
+    working: "NA"
+    file: "/app/frontend/src/App.js"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "testing"
+        comment: "Frontend testing not performed as per testing protocol. Backend testing only."
+
+metadata:
+  created_by: "testing_agent"
+  version: "1.0"
+  test_sequence: 1
+  run_ui: false
+  backend_url: "https://gemstone-makeover.preview.emergentagent.com"
+  test_date: "2026-01-15"
+
+test_plan:
+  current_focus:
+    - "All backend API endpoints tested and verified"
+  stuck_tasks: []
+  test_all: true
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "testing"
+    message: "Completed comprehensive backend testing of Essential Gemstones CMS. All 11 test scenarios passed successfully. Backend is fully functional with proper authentication, authorization, data persistence, file upload/serving, and validation. No critical or major issues found. Backend logs show clean execution with no errors. Ready for production use."
