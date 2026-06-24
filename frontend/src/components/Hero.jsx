@@ -1,5 +1,5 @@
-import React from 'react';
-import { ArrowDown } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { ArrowDown, Volume2, VolumeX } from 'lucide-react';
 import { useSite } from '../context/SiteContext';
 import { resolveMediaUrl } from '../lib/api';
 
@@ -8,6 +8,21 @@ export default function Hero() {
   const h = site.hero || {};
   const mediaUrl = resolveMediaUrl(h.mediaUrl);
   const isVideo = h.mediaType === 'video';
+  const videoRef = useRef(null);
+  const [muted, setMuted] = useState(true);
+
+  const toggleMute = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    const next = !muted;
+    v.muted = next;
+    setMuted(next);
+    if (!next) {
+      // Browsers may have blocked sound; ensure playback restarts
+      v.play().catch(() => {});
+    }
+  };
+
   return (
     <section id="top" className="relative min-h-screen flex items-center overflow-hidden bg-[#faf6f0]">
       <div className="relative z-10 max-w-7xl mx-auto w-full px-6 md:px-10 pt-32 pb-20 grid lg:grid-cols-2 gap-12 items-center">
@@ -31,11 +46,29 @@ export default function Hero() {
         <div className="relative h-[420px] md:h-[560px] lg:h-[640px] fade-up" style={{ animationDelay: '0.2s' }}>
           <div className="absolute inset-0 rounded-[280px] overflow-hidden border border-[#d4c5af]/60 bg-[#e8dfd1]">
             {isVideo ? (
-              <video src={mediaUrl} className="w-full h-full object-cover" autoPlay muted loop playsInline />
+              <video
+                ref={videoRef}
+                src={mediaUrl}
+                className="w-full h-full object-cover"
+                autoPlay
+                muted={muted}
+                loop
+                playsInline
+              />
             ) : (
               mediaUrl && <img src={mediaUrl} alt="Hero" className="w-full h-full object-cover" />
             )}
             <div className="absolute inset-0 bg-gradient-to-b from-[#1a1410]/20 via-transparent to-[#1a1410]/40 pointer-events-none"></div>
+            {isVideo && mediaUrl && (
+              <button
+                type="button"
+                onClick={toggleMute}
+                aria-label={muted ? 'Unmute video' : 'Mute video'}
+                className="absolute bottom-5 right-5 w-12 h-12 rounded-full bg-[#1a1410]/70 hover:bg-[#1a1410]/90 backdrop-blur text-[#faf6f0] flex items-center justify-center transition-colors"
+              >
+                {muted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+              </button>
+            )}
           </div>
           {(h.quoteText || h.quoteAuthor) && (
             <div className="absolute -bottom-6 -left-6 md:-left-12 bg-[#faf6f0] px-6 py-5 shadow-xl rounded-2xl max-w-[240px] float-anim">

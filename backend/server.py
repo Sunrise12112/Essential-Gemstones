@@ -1,22 +1,14 @@
-"""Essential Gemstones CMS Backend.
-
-Endpoints:
-  POST /api/admin/login         -> exchange password for JWT
-  GET  /api/site                -> public site content
-  PUT  /api/site                -> update site content (auth)
-  POST /api/upload              -> upload image/video (auth)
-  GET  /api/uploads/<file>      -> serve uploaded media
-"""
+"""Essential Gemstones CMS Backend with multi-admin & permissions."""
 from __future__ import annotations
 
 import logging
 import os
-import shutil
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
+import bcrypt
 import jwt
 from dotenv import load_dotenv
 from fastapi import (
@@ -24,11 +16,10 @@ from fastapi import (
     FastAPI,
     File,
     HTTPException,
-    Request,
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
@@ -50,6 +41,13 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "change-me")
 JWT_ALG = "HS256"
 JWT_DAYS = 30
 
+SECTION_PERMS = [
+    "navbar", "hero", "products", "story", "promise", "chakra", "stats",
+    "lavaMeaning", "founder", "craft", "faq", "gallery", "vip", "footer",
+]
+META_PERMS = ["sectionOrder", "sectionVisibility", "manage_admins"]
+ALL_PERMS = SECTION_PERMS + META_PERMS
+
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
@@ -61,12 +59,40 @@ security = HTTPBearer(auto_error=False)
 
 
 class LoginIn(BaseModel):
+    username: Optional[str] = None
     password: str
 
 
-def make_token() -> str:
+class AdminCreate(BaseModel):
+    username: str
+    password: str
+    permissions: list[str] = []
+    isSuper: bool = False
+
+
+class AdminUpdate(BaseModel):
+    password: Optional[str] = None
+    permissions: Optional[list[str]] = None
+    isSuper: Optional[bool] = None
+
+
+def hash_password(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(pw: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(pw.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+
+def make_token(sub: str, is_super: bool, permissions: list[str], username: str) -> str:
     payload = {
-        "sub": "admin",
+        "sub": sub,
+        "username": username,
+        "isSuper": is_super,
+        "permissions": permissions,
         "iat": int(datetime.utcnow().timestamp()),
         "exp": int((datetime.utcnow() + timedelta(days=JWT_DAYS)).timestamp()),
     }
@@ -82,9 +108,24 @@ async def require_admin(
         payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALG])
     except jwt.PyJWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    if payload.get("sub") != "admin":
+    if not payload.get("sub"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     return payload
+
+
+def require_super(payload: dict) -> None:
+    if not payload.get("isSuper"):
+        raise HTTPException(status_code=403, detail="Super admin only")
+
+
+def doc_to_admin(doc: dict) -> dict:
+    return {
+        "id": doc["_id"],
+        "username": doc["username"],
+        "permissions": doc.get("permissions", []),
+        "isSuper": bool(doc.get("isSuper")),
+        "createdAt": doc.get("createdAt"),
+    }
 
 
 # ---------------- DEFAULT SITE CONTENT ---------------- #
@@ -122,24 +163,8 @@ def default_site() -> dict:
             "title": "The Collection",
             "subtitle": "Discover our unique selection of handcrafted lava stone bracelets. Each piece is designed to bring natural beauty and strength to your daily life.",
             "items": [
-                {
-                    "id": "cross-faith",
-                    "name": "Cross of Faith Lava Stone Bracelet",
-                    "price": "$24.00",
-                    "image": "https://imgproxy.gamma.app/resize/quality:80/resizing_type:fit/width:2000/https://cdn.gamma.app/e4xhbiak5gqtkn6/169bc339a348442090f43887e3989cac/original/Lava_Christian_Cross_Silver.jpg",
-                    "description": "Handcrafted lava stone bracelet featuring a silver cross \u2014 a quiet symbol of faith you can carry with you every day.",
-                    "buyUrl": "https://buy.stripe.com/dRm4gse2veRk3RZd15gYU00",
-                    "badge": "New",
-                },
-                {
-                    "id": "chakra",
-                    "name": "7 Chakra Lava Stone Bracelet",
-                    "price": "$28.00",
-                    "image": "https://imgproxy.gamma.app/resize/quality:80/resizing_type:fit/width:2000/https://cdn.gamma.app/e4xhbiak5gqtkn6/70ec7e9cde304cbe90a6029669423444/original/7-Chakra-Healing-Beaded-Bracelet-Natural-Lava-Stone-Diffuser-Bracelet-Jewelry.jpg",
-                    "description": "Seven sacred stones aligned with the chakras, paired with porous lava beads ready to diffuse your favorite oils.",
-                    "buyUrl": "https://buy.stripe.com/fZufZa1fJcJcdsz9OTgYU02",
-                    "badge": "New",
-                },
+                {"id": "cross-faith", "name": "Cross of Faith Lava Stone Bracelet", "price": "$24.00", "image": "https://imgproxy.gamma.app/resize/quality:80/resizing_type:fit/width:2000/https://cdn.gamma.app/e4xhbiak5gqtkn6/169bc339a348442090f43887e3989cac/original/Lava_Christian_Cross_Silver.jpg", "description": "Handcrafted lava stone bracelet featuring a silver cross \u2014 a quiet symbol of faith you can carry with you every day.", "buyUrl": "https://buy.stripe.com/dRm4gse2veRk3RZd15gYU00", "badge": "New"},
+                {"id": "chakra", "name": "7 Chakra Lava Stone Bracelet", "price": "$28.00", "image": "https://imgproxy.gamma.app/resize/quality:80/resizing_type:fit/width:2000/https://cdn.gamma.app/e4xhbiak5gqtkn6/70ec7e9cde304cbe90a6029669423444/original/7-Chakra-Healing-Beaded-Bracelet-Natural-Lava-Stone-Diffuser-Bracelet-Jewelry.jpg", "description": "Seven sacred stones aligned with the chakras, paired with porous lava beads ready to diffuse your favorite oils.", "buyUrl": "https://buy.stripe.com/fZufZa1fJcJcdsz9OTgYU02", "badge": "New"},
             ],
         },
         "story": {
@@ -153,11 +178,7 @@ def default_site() -> dict:
                 "Lava stone \u2014 the cornerstone of every Essential Gemstones design \u2014 is one of the oldest and most powerful stones on earth. Formed in fire and shaped by nature over thousands of years, it carries the energy of transformation, grounding, and raw strength.",
             ],
         },
-        "promise": {
-            "kicker": "Our Promise",
-            "title": "Why Choose Essential Gemstones?",
-            "body": "We want your bracelet to be a cherished companion for years to come. That\u2019s why every Essential Gemstones package includes extra beads and a sturdy elastic band \u2014 your beloved piece is fully restringable, empowering you to easily repair or customize it yourself, right at home.",
-        },
+        "promise": {"kicker": "Our Promise", "title": "Why Choose Essential Gemstones?", "body": "We want your bracelet to be a cherished companion for years to come. That\u2019s why every Essential Gemstones package includes extra beads and a sturdy elastic band \u2014 your beloved piece is fully restringable, empowering you to easily repair or customize it yourself, right at home."},
         "chakra": {
             "kicker": "Our Craft",
             "title": "Awaken Your Spirit: The 7 Chakra Bracelet",
@@ -265,34 +286,8 @@ def default_site() -> dict:
             "quote": "\u201cThank you from the bottom of my heart.\u201d \u2014 Luca",
             "socials": {"instagram": "#", "facebook": "#"},
         },
-        "sectionOrder": [
-            "hero",
-            "products",
-            "story",
-            "promise",
-            "chakra",
-            "stats",
-            "lavaMeaning",
-            "founder",
-            "craft",
-            "faq",
-            "gallery",
-            "vip",
-        ],
-        "sectionVisibility": {
-            "hero": True,
-            "products": True,
-            "story": True,
-            "promise": True,
-            "chakra": True,
-            "stats": True,
-            "lavaMeaning": True,
-            "founder": True,
-            "craft": True,
-            "faq": True,
-            "gallery": True,
-            "vip": True,
-        },
+        "sectionOrder": ["hero", "products", "story", "promise", "chakra", "stats", "lavaMeaning", "founder", "craft", "faq", "gallery", "vip"],
+        "sectionVisibility": {k: True for k in ["hero", "products", "story", "promise", "chakra", "stats", "lavaMeaning", "founder", "craft", "faq", "gallery", "vip"]},
     }
 
 
@@ -315,14 +310,112 @@ async def root() -> dict:
 
 @app.post("/api/admin/login")
 async def admin_login(data: LoginIn) -> dict:
+    # Username + password: lookup in admins collection
+    if data.username:
+        doc = await db.admins.find_one({"username": data.username.lower().strip()})
+        if not doc or not verify_password(data.password, doc.get("passwordHash", "")):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        token = make_token(
+            sub=doc["_id"],
+            is_super=bool(doc.get("isSuper")),
+            permissions=doc.get("permissions", []),
+            username=doc["username"],
+        )
+        return {"token": token, "user": doc_to_admin(doc)}
+
+    # Legacy: master password (super admin)
     if data.password != ADMIN_PASSWORD:
         raise HTTPException(status_code=401, detail="Invalid password")
-    return {"token": make_token()}
+    token = make_token(sub="master", is_super=True, permissions=ALL_PERMS, username="master")
+    return {
+        "token": token,
+        "user": {"id": "master", "username": "master", "isSuper": True, "permissions": ALL_PERMS},
+    }
 
 
 @app.get("/api/admin/me")
-async def admin_me(_admin: dict = Depends(require_admin)) -> dict:
+async def admin_me(admin: dict = Depends(require_admin)) -> dict:
+    return {
+        "ok": True,
+        "user": {
+            "id": admin.get("sub"),
+            "username": admin.get("username"),
+            "isSuper": bool(admin.get("isSuper")),
+            "permissions": admin.get("permissions", []),
+        },
+    }
+
+
+# ---- admin user management (super only) ---- #
+
+
+@app.get("/api/admin/admins")
+async def list_admins(admin: dict = Depends(require_admin)) -> list[dict]:
+    require_super(admin)
+    cursor = db.admins.find({}, {"passwordHash": 0})
+    out: list[dict] = []
+    async for doc in cursor:
+        out.append(doc_to_admin(doc))
+    return out
+
+
+@app.post("/api/admin/admins")
+async def create_admin(payload: AdminCreate, admin: dict = Depends(require_admin)) -> dict:
+    require_super(admin)
+    username = payload.username.lower().strip()
+    if not username or not payload.password:
+        raise HTTPException(status_code=400, detail="Username and password required")
+    if username == "master":
+        raise HTTPException(status_code=400, detail="Reserved username")
+    existing = await db.admins.find_one({"username": username})
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    perms = [p for p in (payload.permissions or []) if p in ALL_PERMS]
+    if payload.isSuper:
+        perms = ALL_PERMS.copy()
+    doc = {
+        "_id": str(uuid.uuid4()),
+        "username": username,
+        "passwordHash": hash_password(payload.password),
+        "permissions": perms,
+        "isSuper": bool(payload.isSuper),
+        "createdAt": datetime.utcnow().isoformat(),
+    }
+    await db.admins.insert_one(doc)
+    return doc_to_admin(doc)
+
+
+@app.put("/api/admin/admins/{admin_id}")
+async def update_admin(admin_id: str, payload: AdminUpdate, admin: dict = Depends(require_admin)) -> dict:
+    require_super(admin)
+    doc = await db.admins.find_one({"_id": admin_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    update: dict[str, Any] = {}
+    if payload.password:
+        update["passwordHash"] = hash_password(payload.password)
+    if payload.permissions is not None:
+        update["permissions"] = [p for p in payload.permissions if p in ALL_PERMS]
+    if payload.isSuper is not None:
+        update["isSuper"] = bool(payload.isSuper)
+        if payload.isSuper:
+            update["permissions"] = ALL_PERMS.copy()
+    if update:
+        await db.admins.update_one({"_id": admin_id}, {"$set": update})
+    new_doc = await db.admins.find_one({"_id": admin_id})
+    return doc_to_admin(new_doc)
+
+
+@app.delete("/api/admin/admins/{admin_id}")
+async def delete_admin(admin_id: str, admin: dict = Depends(require_admin)) -> dict:
+    require_super(admin)
+    res = await db.admins.delete_one({"_id": admin_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Admin not found")
     return {"ok": True}
+
+
+# ---- site content ---- #
 
 
 @app.get("/api/site")
@@ -331,15 +424,31 @@ async def get_site() -> dict:
 
 
 @app.put("/api/site")
-async def update_site(payload: dict, _admin: dict = Depends(require_admin)) -> dict:
-    # Only persist known fields to avoid junk; payload should be a full or partial site doc.
-    allowed = set(default_site().keys())
-    update_doc: dict[str, Any] = {k: v for k, v in payload.items() if k in allowed}
+async def update_site(payload: dict, admin: dict = Depends(require_admin)) -> dict:
+    allowed_all = set(default_site().keys())
+    is_super = bool(admin.get("isSuper"))
+    user_perms = set(admin.get("permissions") or [])
+
+    update_doc: dict[str, Any] = {}
+    rejected: list[str] = []
+    for k, v in payload.items():
+        if k not in allowed_all:
+            continue
+        if is_super or k in user_perms:
+            update_doc[k] = v
+        else:
+            rejected.append(k)
     if not update_doc:
-        raise HTTPException(status_code=400, detail="No valid fields")
+        raise HTTPException(status_code=403, detail=f"No permitted fields to update. Rejected: {rejected}")
     update_doc["updatedAt"] = datetime.utcnow().isoformat()
     await db.site.update_one({"_id": "main"}, {"$set": update_doc}, upsert=True)
-    return await get_site_doc()
+    out = await get_site_doc()
+    if rejected:
+        out["_rejected"] = rejected
+    return out
+
+
+# ---- uploads ---- #
 
 
 @app.post("/api/upload")
@@ -362,7 +471,6 @@ async def upload_media(
     new_name = f"{uuid.uuid4().hex}{ext}"
     dest = UPLOAD_DIR / new_name
 
-    # stream copy with size check
     size = 0
     with dest.open("wb") as out:
         while True:
@@ -383,12 +491,23 @@ async def upload_media(
 
 @app.get("/api/uploads/{name}")
 async def serve_upload(name: str) -> FileResponse:
-    # prevent path traversal
     safe_name = Path(name).name
     file_path = UPLOAD_DIR / safe_name
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(file_path)
+
+
+# ---------------- META ---------------- #
+
+
+@app.get("/api/permissions")
+async def list_permissions() -> dict:
+    return {
+        "sectionPermissions": SECTION_PERMS,
+        "metaPermissions": META_PERMS,
+        "all": ALL_PERMS,
+    }
 
 
 # ---------------- MIDDLEWARE ---------------- #

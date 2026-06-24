@@ -237,6 +237,102 @@ backend:
         agent: "testing"
         comment: "POST /api/upload with unsupported file type (.txt) correctly returns 400 Bad Request. File type validation working as expected."
 
+  - task: "Multi-admin support - Legacy master password with new response format"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/admin/login with master password '1121211221' (no username) returns 200 with token AND user object containing isSuper=true and full permissions (17 total: 14 section + 3 meta). Wrong password correctly returns 401. Legacy authentication fully working."
+
+  - task: "Permissions metadata endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/permissions returns correct structure with sectionPermissions (14 keys), metaPermissions (3 keys: sectionOrder, sectionVisibility, manage_admins), and 'all' array (17 total). Endpoint working correctly."
+
+  - task: "Admin user management - Create, list, validation"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Super admin can create new admins via POST /api/admin/admins. Returns correct fields (id, username, permissions, isSuper, createdAt) without exposing passwordHash. Duplicate username validation returns 400. Reserved username 'master' correctly rejected with 400. GET /api/admin/admins lists all admins correctly. All CRUD operations working as expected."
+
+  - task: "Admin authentication - Login with username/password"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/admin/login with username and password works correctly. Returns token and user object with isSuper=false and correct permissions. Wrong password returns 401. GET /api/admin/me with admin token returns correct user info. Authentication flow fully functional."
+
+  - task: "Permission enforcement on site content updates"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "PUT /api/site correctly enforces permissions. Admin with 'hero' permission can update hero section (verified persistence). Admin without 'footer' permission cannot update footer (returns 403 with rejected fields list). Mixed updates work correctly: allowed sections update, forbidden sections rejected with '_rejected' array in response. Permission system working perfectly."
+
+  - task: "Super admin privilege enforcement"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Non-super admins correctly cannot access admin management endpoints. GET /api/admin/admins returns 403. POST /api/admin/admins returns 403. DELETE /api/admin/admins returns 403. Super admin privilege enforcement working correctly."
+
+  - task: "Admin update operations - Permissions, password, promotion, deletion"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "PUT /api/admin/admins/{id} successfully updates admin permissions. Password update works and new password can be used for login. Promoting admin to super (isSuper=true) automatically grants all 17 permissions. DELETE /api/admin/admins/{id} removes admin and subsequent login attempts return 401. All admin update operations working correctly."
+
+  - task: "File upload still works after multi-admin changes"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/upload with authenticated token still works correctly. Returns proper response with url, kind, and size fields. Upload functionality not affected by multi-admin feature implementation."
+
 frontend:
   - task: "Frontend integration"
     implemented: false
@@ -252,15 +348,16 @@ frontend:
 
 metadata:
   created_by: "testing_agent"
-  version: "1.0"
-  test_sequence: 1
+  version: "1.1"
+  test_sequence: 2
   run_ui: false
   backend_url: "https://gemstone-makeover.preview.emergentagent.com"
-  test_date: "2026-01-15"
+  test_date: "2026-06-24"
 
 test_plan:
   current_focus:
-    - "All backend API endpoints tested and verified"
+    - "Multi-admin feature with permission enforcement"
+    - "Cross-device sync via MongoDB persistence"
   stuck_tasks: []
   test_all: true
   test_priority: "high_first"
@@ -268,3 +365,5 @@ test_plan:
 agent_communication:
   - agent: "testing"
     message: "Completed comprehensive backend testing of Essential Gemstones CMS. All 11 test scenarios passed successfully. Backend is fully functional with proper authentication, authorization, data persistence, file upload/serving, and validation. No critical or major issues found. Backend logs show clean execution with no errors. Ready for production use."
+  - agent: "testing"
+    message: "BUG FIX VERIFICATION COMPLETE: Multi-admin feature fully tested with 25 comprehensive test cases covering all scenarios A-H. ALL TESTS PASSED (25/25). Key findings: (1) Legacy master password '1121211221' still works as super admin with new response format including user object with isSuper=true and full permissions. (2) Multi-admin support working perfectly - can create admins with limited permissions, username/password authentication works. (3) Permission enforcement on PUT /api/site working correctly - admins can only update sections they have permission for, forbidden sections rejected with 403 or _rejected array. (4) Super admin privilege enforcement working - non-super admins cannot access admin management endpoints. (5) Admin CRUD operations all working (create, read, update permissions/password/promotion, delete). (6) Cross-device sync working via MongoDB persistence - all updates persist correctly. (7) Upload functionality still works. No critical or major issues found. Feature ready for production."

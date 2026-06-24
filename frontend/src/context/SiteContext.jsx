@@ -63,7 +63,8 @@ export function SiteProvider({ children }) {
 
   const refresh = useCallback(async () => {
     try {
-      const { data } = await api.get('/site');
+      // Cache-bust to ensure fresh data across devices
+      const { data } = await api.get(`/site?t=${Date.now()}`);
       setSite({ ...defaultSite, ...data });
     } catch (e) {
       // keep defaults (mock-backed)
@@ -74,6 +75,18 @@ export function SiteProvider({ children }) {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Refresh content when tab/window regains focus so other devices see edits
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === 'visible') refresh(); };
+    const onFocus = () => refresh();
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [refresh]);
 
   return (
     <SiteContext.Provider value={{ site, setSite, loading, refresh }}>

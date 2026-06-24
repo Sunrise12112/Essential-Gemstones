@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { LogOut, Save, Eye, RefreshCw, ChevronUp, ChevronDown } from 'lucide-react';
+import { LogOut, Save, Eye, RefreshCw, ChevronUp, ChevronDown, Users, ShieldCheck } from 'lucide-react';
 import api from '../lib/api';
 import { useSite } from '../context/SiteContext';
 import { useToast } from '../hooks/use-toast';
 import { Field, TextInput, TextArea, SectionCard, ListReorder } from '../components/admin/FormControls';
 import MediaPicker from '../components/admin/MediaPicker';
+import AdminsManager from '../components/admin/AdminsManager';
 import { Switch } from '../components/ui/switch';
 
 const SECTION_LABELS = {
@@ -30,17 +31,27 @@ export default function AdminDashboard() {
   const [data, setData] = useState(null);
   const [openSections, setOpenSections] = useState({ navbar: true });
   const [saving, setSaving] = useState(false);
+  const [me, setMe] = useState(null);
 
   useEffect(() => {
     if (!localStorage.getItem('eg_admin_token')) {
       navigate('/admin');
       return;
     }
-    api.get('/admin/me').catch(() => {
+    api.get('/admin/me').then((res) => {
+      setMe(res.data?.user || null);
+    }).catch(() => {
       localStorage.removeItem('eg_admin_token');
+      localStorage.removeItem('eg_admin_user');
       navigate('/admin');
     });
   }, [navigate]);
+
+  const can = (key) => {
+    if (!me) return false;
+    if (me.isSuper) return true;
+    return (me.permissions || []).includes(key);
+  };
 
   useEffect(() => {
     if (site && !data) setData(JSON.parse(JSON.stringify(site)));
@@ -77,6 +88,7 @@ export default function AdminDashboard() {
 
   const logout = () => {
     localStorage.removeItem('eg_admin_token');
+    localStorage.removeItem('eg_admin_user');
     navigate('/admin');
   };
 
@@ -96,7 +108,9 @@ export default function AdminDashboard() {
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
           <div>
             <h1 className="font-serif text-xl">Site Editor</h1>
-            <p className="text-xs text-[#bfae95]">Essential Gemstones CMS</p>
+            <p className="text-xs text-[#bfae95]">
+              {me ? <>Signed in as <span className="text-[#c9a876]">{me.username}</span>{me.isSuper && <span className="ml-1 inline-flex items-center gap-1"><ShieldCheck className="w-3 h-3" />super</span>}</> : 'Essential Gemstones CMS'}
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <Link to="/" target="_blank" className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-[#3d2f24] rounded-full hover:bg-[#241b15]"><Eye className="w-4 h-4" /> View site</Link>
@@ -110,6 +124,7 @@ export default function AdminDashboard() {
 
       <main className="max-w-6xl mx-auto px-6 py-10 space-y-4">
         {/* Section ordering */}
+        {can('sectionOrder') && (
         <SectionCard title="Section Order & Visibility" open={openSections.order} onToggle={() => toggle('order')}>
           <p className="text-sm text-[#5a4a3d] -mt-1">Reorder sections on the home page, or hide them.</p>
           <div className="space-y-2">
@@ -128,8 +143,17 @@ export default function AdminDashboard() {
             ))}
           </div>
         </SectionCard>
+        )}
+
+        {/* Manage admins (super only) */}
+        {me?.isSuper && (
+          <SectionCard title="Manage Admins" open={openSections.admins} onToggle={() => toggle('admins')}>
+            <AdminsManager currentUser={me} />
+          </SectionCard>
+        )}
 
         {/* Navbar */}
+        {can('navbar') && (
         <SectionCard title="Navigation Menu" open={openSections.navbar} onToggle={() => toggle('navbar')}>
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label="Brand name"><TextInput value={data.navbar.brand} onChange={(v) => update(['navbar', 'brand'], v)} /></Field>
@@ -152,8 +176,10 @@ export default function AdminDashboard() {
             />
           </Field>
         </SectionCard>
+        )}
 
         {/* Hero */}
+        {can('hero') && (
         <SectionCard title="Hero" open={openSections.hero} onToggle={() => toggle('hero')}>
           <Field label="Kicker (small uppercase text)"><TextInput value={data.hero.kicker} onChange={(v) => update(['hero','kicker'], v)} /></Field>
           <div className="grid sm:grid-cols-2 gap-4">
@@ -183,8 +209,10 @@ export default function AdminDashboard() {
             <Field label="Quote author"><TextInput value={data.hero.quoteAuthor} onChange={(v) => update(['hero','quoteAuthor'], v)} /></Field>
           </div>
         </SectionCard>
+        )}
 
         {/* Products */}
+        {can('products') && (
         <SectionCard title="Collection (Products)" open={openSections.products} onToggle={() => toggle('products')}>
           <Field label="Kicker"><TextInput value={data.products.kicker} onChange={(v) => update(['products','kicker'], v)} /></Field>
           <Field label="Title"><TextInput value={data.products.title} onChange={(v) => update(['products','title'], v)} /></Field>
@@ -213,8 +241,10 @@ export default function AdminDashboard() {
             />
           </Field>
         </SectionCard>
+        )}
 
         {/* Story */}
+        {can('story') && (
         <SectionCard title="Our Story" open={openSections.story} onToggle={() => toggle('story')}>
           <Field label="Kicker"><TextInput value={data.story.kicker} onChange={(v) => update(['story','kicker'], v)} /></Field>
           <Field label="Title"><TextInput value={data.story.title} onChange={(v) => update(['story','title'], v)} /></Field>
@@ -233,15 +263,19 @@ export default function AdminDashboard() {
             />
           </Field>
         </SectionCard>
+        )}
 
         {/* Promise */}
+        {can('promise') && (
         <SectionCard title="Our Promise" open={openSections.promise} onToggle={() => toggle('promise')}>
           <Field label="Kicker"><TextInput value={data.promise.kicker} onChange={(v) => update(['promise','kicker'], v)} /></Field>
           <Field label="Title"><TextInput value={data.promise.title} onChange={(v) => update(['promise','title'], v)} /></Field>
           <Field label="Body"><TextArea value={data.promise.body} onChange={(v) => update(['promise','body'], v)} rows={4} /></Field>
         </SectionCard>
+        )}
 
         {/* Chakra */}
+        {can('chakra') && (
         <SectionCard title="Chakra Guide" open={openSections.chakra} onToggle={() => toggle('chakra')}>
           <Field label="Kicker"><TextInput value={data.chakra.kicker} onChange={(v) => update(['chakra','kicker'], v)} /></Field>
           <Field label="Title"><TextInput value={data.chakra.title} onChange={(v) => update(['chakra','title'], v)} /></Field>
@@ -270,8 +304,10 @@ export default function AdminDashboard() {
             />
           </Field>
         </SectionCard>
+        )}
 
         {/* Stats */}
+        {can('stats') && (
         <SectionCard title="Best Sellers (Stats)" open={openSections.stats} onToggle={() => toggle('stats')}>
           <Field label="Kicker"><TextInput value={data.stats.kicker} onChange={(v) => update(['stats','kicker'], v)} /></Field>
           <Field label="Title"><TextInput value={data.stats.title} onChange={(v) => update(['stats','title'], v)} /></Field>
@@ -294,8 +330,10 @@ export default function AdminDashboard() {
             />
           </Field>
         </SectionCard>
+        )}
 
         {/* Lava Meaning */}
+        {can('lavaMeaning') && (
         <SectionCard title="What Lava Stone Means" open={openSections.lavaMeaning} onToggle={() => toggle('lavaMeaning')}>
           <Field label="Kicker"><TextInput value={data.lavaMeaning.kicker} onChange={(v) => update(['lavaMeaning','kicker'], v)} /></Field>
           <Field label="Title"><TextInput value={data.lavaMeaning.title} onChange={(v) => update(['lavaMeaning','title'], v)} /></Field>
@@ -319,8 +357,10 @@ export default function AdminDashboard() {
             />
           </Field>
         </SectionCard>
+        )}
 
         {/* Founder */}
+        {can('founder') && (
         <SectionCard title="Meet the Founder" open={openSections.founder} onToggle={() => toggle('founder')}>
           <Field label="Kicker"><TextInput value={data.founder.kicker} onChange={(v) => update(['founder','kicker'], v)} /></Field>
           <Field label="Title"><TextInput value={data.founder.title} onChange={(v) => update(['founder','title'], v)} /></Field>
@@ -349,8 +389,10 @@ export default function AdminDashboard() {
             />
           </Field>
         </SectionCard>
+        )}
 
         {/* Craft */}
+        {can('craft') && (
         <SectionCard title="Craftsmanship" open={openSections.craft} onToggle={() => toggle('craft')}>
           <Field label="Kicker"><TextInput value={data.craft.kicker} onChange={(v) => update(['craft','kicker'], v)} /></Field>
           <Field label="Title"><TextInput value={data.craft.title} onChange={(v) => update(['craft','title'], v)} /></Field>
@@ -375,8 +417,10 @@ export default function AdminDashboard() {
             />
           </Field>
         </SectionCard>
+        )}
 
         {/* FAQ */}
+        {can('faq') && (
         <SectionCard title="FAQ" open={openSections.faq} onToggle={() => toggle('faq')}>
           <Field label="Kicker"><TextInput value={data.faq.kicker} onChange={(v) => update(['faq','kicker'], v)} /></Field>
           <Field label="Title"><TextInput value={data.faq.title} onChange={(v) => update(['faq','title'], v)} /></Field>
@@ -397,8 +441,10 @@ export default function AdminDashboard() {
             />
           </Field>
         </SectionCard>
+        )}
 
         {/* Gallery */}
+        {can('gallery') && (
         <SectionCard title="Gallery" open={openSections.gallery} onToggle={() => toggle('gallery')}>
           <Field label="Kicker"><TextInput value={data.gallery.kicker} onChange={(v) => update(['gallery','kicker'], v)} /></Field>
           <Field label="Title"><TextInput value={data.gallery.title} onChange={(v) => update(['gallery','title'], v)} /></Field>
@@ -415,8 +461,10 @@ export default function AdminDashboard() {
             />
           </Field>
         </SectionCard>
+        )}
 
         {/* VIP */}
+        {can('vip') && (
         <SectionCard title="VIP Membership" open={openSections.vip} onToggle={() => toggle('vip')}>
           <Field label="Kicker"><TextInput value={data.vip.kicker} onChange={(v) => update(['vip','kicker'], v)} /></Field>
           <Field label="Title"><TextInput value={data.vip.title} onChange={(v) => update(['vip','title'], v)} /></Field>
@@ -441,8 +489,10 @@ export default function AdminDashboard() {
             />
           </Field>
         </SectionCard>
+        )}
 
         {/* Footer */}
+        {can('footer') && (
         <SectionCard title="Footer & Contact" open={openSections.footer} onToggle={() => toggle('footer')}>
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label="Brand"><TextInput value={data.footer.brand} onChange={(v) => update(['footer','brand'], v)} /></Field>
@@ -466,6 +516,7 @@ export default function AdminDashboard() {
           <Field label="Copyright suffix"><TextInput value={data.footer.copyright} onChange={(v) => update(['footer','copyright'], v)} /></Field>
           <Field label="Closing quote"><TextInput value={data.footer.quote} onChange={(v) => update(['footer','quote'], v)} /></Field>
         </SectionCard>
+        )}
 
         <div className="sticky bottom-4 z-30 flex justify-end">
           <button onClick={save} disabled={saving} className="inline-flex items-center gap-2 px-6 py-3 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm shadow-2xl hover:bg-[#6b4f3a] disabled:opacity-60">

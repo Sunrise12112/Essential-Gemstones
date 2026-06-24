@@ -1,0 +1,231 @@
+import React, { useEffect, useState } from 'react';
+import { Trash2, Plus, Save, ShieldCheck, RefreshCw } from 'lucide-react';
+import api from '../../lib/api';
+import { useToast } from '../../hooks/use-toast';
+import { Field, TextInput } from './FormControls';
+
+const SECTION_LABELS = {
+  navbar: 'Navigation Menu',
+  hero: 'Hero',
+  products: 'Collection (Products)',
+  story: 'Our Story',
+  promise: 'Our Promise',
+  chakra: 'Chakra Guide',
+  stats: 'Best Sellers (Stats)',
+  lavaMeaning: 'What Lava Stone Means',
+  founder: 'Meet the Founder',
+  craft: 'Craftsmanship',
+  faq: 'FAQ',
+  gallery: 'Gallery',
+  vip: 'VIP Membership',
+  footer: 'Footer & Contact',
+  sectionOrder: 'Section order',
+  sectionVisibility: 'Section show/hide',
+  manage_admins: 'Manage admins',
+};
+
+export default function AdminsManager({ currentUser }) {
+  const [admins, setAdmins] = useState([]);
+  const [perms, setPerms] = useState({ sectionPermissions: [], metaPermissions: [], all: [] });
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [newAdmin, setNewAdmin] = useState({ username: '', password: '', permissions: [], isSuper: false });
+  const { toast } = useToast();
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [a, p] = await Promise.all([api.get('/admin/admins'), api.get('/permissions')]);
+      setAdmins(a.data);
+      setPerms(p.data);
+    } catch (e) {
+      toast({ title: 'Failed to load admins', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  const toggleNewPerm = (k) => {
+    setNewAdmin((s) => ({
+      ...s,
+      permissions: s.permissions.includes(k)
+        ? s.permissions.filter((x) => x !== k)
+        : [...s.permissions, k],
+    }));
+  };
+
+  const create = async () => {
+    if (!newAdmin.username.trim() || !newAdmin.password) {
+      toast({ title: 'Missing info', description: 'Username and password are required.', variant: 'destructive' });
+      return;
+    }
+    setCreating(true);
+    try {
+      await api.post('/admin/admins', newAdmin);
+      toast({ title: 'Admin created', description: `${newAdmin.username} can now sign in.` });
+      setNewAdmin({ username: '', password: '', permissions: [], isSuper: false });
+      load();
+    } catch (e) {
+      toast({ title: 'Could not create', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const updatePerms = async (a, permissions) => {
+    try {
+      await api.put(`/admin/admins/${a.id}`, { permissions });
+      toast({ title: 'Permissions updated', description: a.username });
+      load();
+    } catch (e) {
+      toast({ title: 'Update failed', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
+    }
+  };
+
+  const setSuper = async (a, isSuper) => {
+    try {
+      await api.put(`/admin/admins/${a.id}`, { isSuper });
+      toast({ title: isSuper ? 'Granted super admin' : 'Removed super admin', description: a.username });
+      load();
+    } catch (e) {
+      toast({ title: 'Update failed', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
+    }
+  };
+
+  const resetPassword = async (a) => {
+    const pw = window.prompt(`New password for ${a.username}:`);
+    if (!pw) return;
+    try {
+      await api.put(`/admin/admins/${a.id}`, { password: pw });
+      toast({ title: 'Password updated', description: a.username });
+    } catch (e) {
+      toast({ title: 'Update failed', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
+    }
+  };
+
+  const removeAdmin = async (a) => {
+    if (!window.confirm(`Delete admin "${a.username}"? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/admin/admins/${a.id}`);
+      toast({ title: 'Deleted', description: a.username });
+      load();
+    } catch (e) {
+      toast({ title: 'Delete failed', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
+    }
+  };
+
+  if (loading) {
+    return <div className="flex items-center gap-2 text-[#6b4f3a] text-sm"><RefreshCw className="w-4 h-4 animate-spin" /> Loading admins\u2026</div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <p className="text-sm text-[#5a4a3d]">Create additional admins and choose exactly which sections each one can edit. <strong>Super admins</strong> can do everything (including managing other admins).</p>
+
+      {/* Existing admins */}
+      <div className="space-y-4">
+        {admins.length === 0 && <p className="text-sm text-[#8b6b4f] italic">No additional admins yet.</p>}
+        {admins.map((a) => (
+          <AdminRow
+            key={a.id}
+            admin={a}
+            allPerms={perms.all}
+            onUpdatePerms={(p) => updatePerms(a, p)}
+            onSetSuper={(s) => setSuper(a, s)}
+            onResetPassword={() => resetPassword(a)}
+            onRemove={() => removeAdmin(a)}
+            isCurrentUser={currentUser?.id === a.id}
+          />
+        ))}
+      </div>
+
+      {/* Create new */}
+      <div className="border border-[#e8dfd1] rounded-2xl p-5 bg-[#faf6f0]">
+        <h4 className="font-serif text-lg text-[#1a1410] mb-4 flex items-center gap-2"><Plus className="w-4 h-4" /> Add new admin</h4>
+        <div className="grid sm:grid-cols-2 gap-3 mb-4">
+          <Field label="Username"><TextInput value={newAdmin.username} onChange={(v) => setNewAdmin({ ...newAdmin, username: v })} placeholder="e.g. mom" /></Field>
+          <Field label="Password"><TextInput value={newAdmin.password} onChange={(v) => setNewAdmin({ ...newAdmin, password: v })} placeholder="choose a password" type="text" /></Field>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-[#3d3128] mb-4 cursor-pointer">
+          <input type="checkbox" checked={newAdmin.isSuper} onChange={(e) => setNewAdmin({ ...newAdmin, isSuper: e.target.checked })} className="rounded" />
+          <ShieldCheck className="w-4 h-4 text-[#c9a876]" /> Super admin (full access, can manage other admins)
+        </label>
+        {!newAdmin.isSuper && (
+          <div>
+            <p className="text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Allowed sections</p>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {perms.all.map((k) => (
+                <label key={k} className="flex items-center gap-2 text-sm text-[#3d3128] cursor-pointer">
+                  <input type="checkbox" checked={newAdmin.permissions.includes(k)} onChange={() => toggleNewPerm(k)} className="rounded" />
+                  {SECTION_LABELS[k] || k}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        <button onClick={create} disabled={creating} className="mt-5 inline-flex items-center gap-2 px-5 py-2.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm hover:bg-[#6b4f3a] disabled:opacity-60">
+          {creating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Create admin
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AdminRow({ admin, allPerms, onUpdatePerms, onSetSuper, onResetPassword, onRemove, isCurrentUser }) {
+  const [permissions, setPermissions] = useState(admin.permissions || []);
+  const [editing, setEditing] = useState(false);
+  const dirty = JSON.stringify([...permissions].sort()) !== JSON.stringify([...(admin.permissions || [])].sort());
+
+  const toggle = (k) => {
+    setPermissions((s) => s.includes(k) ? s.filter((x) => x !== k) : [...s, k]);
+  };
+
+  return (
+    <div className="border border-[#e8dfd1] rounded-2xl p-5 bg-white">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="font-serif text-lg text-[#1a1410]">{admin.username}</span>
+            {admin.isSuper && <span className="inline-flex items-center gap-1 text-xs bg-[#c9a876]/20 text-[#6b4f3a] px-2 py-0.5 rounded-full"><ShieldCheck className="w-3 h-3" /> super</span>}
+            {isCurrentUser && <span className="text-xs text-[#8b6b4f]">(you)</span>}
+          </div>
+          {admin.createdAt && <p className="text-xs text-[#8b6b4f] mt-0.5">Created {new Date(admin.createdAt).toLocaleDateString()}</p>}
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={onResetPassword} className="text-xs px-3 py-1.5 border border-[#e8dfd1] rounded-lg hover:bg-[#faf6f0]">Reset password</button>
+          {!isCurrentUser && (
+            <button onClick={onRemove} className="text-xs px-3 py-1.5 border border-red-300 text-red-700 rounded-lg hover:bg-red-50 inline-flex items-center gap-1"><Trash2 className="w-3 h-3" /> Delete</button>
+          )}
+        </div>
+      </div>
+
+      <label className="flex items-center gap-2 text-sm text-[#3d3128] cursor-pointer mb-3">
+        <input type="checkbox" checked={admin.isSuper} onChange={(e) => onSetSuper(e.target.checked)} className="rounded" disabled={isCurrentUser && admin.isSuper} />
+        Super admin (full access)
+      </label>
+
+      {!admin.isSuper && (
+        <div>
+          <button onClick={() => setEditing(!editing)} className="text-xs text-[#6b4f3a] underline mb-2">{editing ? 'Hide permissions' : `Edit permissions (${admin.permissions?.length || 0})`}</button>
+          {editing && (
+            <div className="border-t border-[#e8dfd1] pt-3 mt-1">
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
+                {allPerms.map((k) => (
+                  <label key={k} className="flex items-center gap-2 text-sm text-[#3d3128] cursor-pointer">
+                    <input type="checkbox" checked={permissions.includes(k)} onChange={() => toggle(k)} className="rounded" />
+                    {SECTION_LABELS[k] || k}
+                  </label>
+                ))}
+              </div>
+              <button onClick={() => { onUpdatePerms(permissions); setEditing(false); }} disabled={!dirty} className="inline-flex items-center gap-2 px-4 py-2 text-xs bg-[#1a1410] text-[#faf6f0] rounded-full hover:bg-[#6b4f3a] disabled:opacity-50">
+                <Save className="w-3 h-3" /> Save permissions
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
