@@ -7,6 +7,9 @@ import api from '../lib/api';
 export default function Footer() {
   const { site } = useSite();
   const f = site.footer || {};
+  const contactTo = (f.contactEmail || 'luca@essentialgemstones.com').trim();
+  const contactSubject = (f.contactSubject || 'Contact Essential Gemstones').trim();
+  const contactMailto = `mailto:${contactTo}?subject=${encodeURIComponent(contactSubject)}`;
   const [email, setEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const { toast } = useToast();
@@ -44,7 +47,7 @@ export default function Footer() {
             <div className="flex items-center gap-3">
               {f.socials?.instagram && <a href={f.socials.instagram} aria-label="Instagram" className="w-10 h-10 rounded-full border border-[#3d2f24] flex items-center justify-center hover:border-[#c9a876] hover:text-[#c9a876] transition-colors"><Instagram className="w-4 h-4" /></a>}
               {f.socials?.facebook && <a href={f.socials.facebook} aria-label="Facebook" className="w-10 h-10 rounded-full border border-[#3d2f24] flex items-center justify-center hover:border-[#c9a876] hover:text-[#c9a876] transition-colors"><Facebook className="w-4 h-4" /></a>}
-              {f.email && <a href={`mailto:${f.email}`} aria-label="Email" className="w-10 h-10 rounded-full border border-[#3d2f24] flex items-center justify-center hover:border-[#c9a876] hover:text-[#c9a876] transition-colors"><Mail className="w-4 h-4" /></a>}
+              <a href={contactMailto} aria-label={`Email ${contactTo}`} title={`Email ${contactTo}`} className="w-10 h-10 rounded-full border border-[#3d2f24] flex items-center justify-center hover:border-[#c9a876] hover:text-[#c9a876] transition-colors"><Mail className="w-4 h-4" /></a>
             </div>
           </div>
           <div>

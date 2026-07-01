@@ -431,17 +431,29 @@ frontend:
         agent: "testing"
         comment: "Frontend testing not performed as per testing protocol. Backend testing only."
 
+  - task: "Footer email icon mailto behavior"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/Footer.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ Email icon mailto behavior verified and working correctly. Test results: (1) href attribute exactly matches expected format: 'mailto:luca@essentialgemstones.com?subject=Contact%20Essential%20Gemstones' with proper URL encoding. (2) aria-label contains expected email: 'Email luca@essentialgemstones.com'. (3) title attribute also contains: 'Email luca@essentialgemstones.com'. (4) Both 'To' (luca@essentialgemstones.com) and 'Subject' (Contact Essential Gemstones) are present in the mailto URL. (5) DOM verification confirms link is correctly rendered in footer social icons row. (6) No console errors detected. (7) Screenshot captured showing footer with three social icons (Instagram, Facebook, Email). The implementation correctly pulls values from site.footer.contactEmail and site.footer.contactSubject with hard-coded fallbacks. Feature is production-ready."
+
 metadata:
   created_by: "testing_agent"
-  version: "1.2"
-  test_sequence: 3
+  version: "1.3"
+  test_sequence: 4
   run_ui: false
   backend_url: "https://gemstone-makeover.preview.emergentagent.com"
-  test_date: "2026-06-24"
+  test_date: "2026-07-01"
 
 test_plan:
   current_focus:
-    - "Newsletter subscription feature"
+    - "Footer email icon mailto behavior"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -457,4 +469,6 @@ agent_communication:
     message: "HERO VIDEO AUDIO BUG FIX - TESTING BLOCKED: Cannot verify the bug fix due to headless browser codec limitations. The Playwright/Chromium environment cannot decode H.264/AAC video files (error: MEDIA_ERR_SRC_NOT_SUPPORTED, FFmpegDemuxer: no supported streams). Tested with both locally generated MP4s and public test videos - all fail to load. CODE REVIEW FINDINGS: (1) UI implementation is correct - video element has autoplay/muted/loop/playsInline attributes, 'Tap for sound' overlay is visible with proper z-index (20), founder quote badge visible at z-index 30. (2) JavaScript logic appears correct - enableSound() function sets video.muted=false, volume=1.0, and calls play(). (3) Error handling present - if play() fails, reverts to muted state. LIMITATION: The error handler catches play() failures and reverts to muted state, which prevents testing in this environment. RECOMMENDATION: Main agent should test with a real browser or request user to verify the fix works with actual video files in production environment."
   - agent: "testing"
     message: "HERO VIDEO AUDIO BUG FIX - ✅ VERIFIED AND WORKING: Retested with WebM VP8/Vorbis video (headless Chromium compatible). ALL TESTS PASSED. Test results: (1) Video uploaded successfully via admin panel and loads correctly (readyState=4). (2) Initial state correct: video.muted=true, 'Tap for sound' overlay visible with opacity=1, video playing. (3) **BUG FIX CONFIRMED**: After clicking 'Tap for sound' button, video.muted successfully changes from true to false, enabling audio. (4) UI behavior correct: overlay disappears (opacity=0), 'Mute video' button appears in bottom-right corner. (5) Mute toggle works: clicking 'Mute video' sets muted=true again, 'Unmute video' button appears. (6) No console errors detected. Screenshots captured showing before/after states. The enableSound() function in Hero.jsx is working correctly - it sets video.muted=false, volume=1.0, and the video continues playing with audio enabled. Feature is production-ready."
+  - agent: "testing"
+    message: "FOOTER EMAIL ICON MAILTO BEHAVIOR - ✅ VERIFIED AND WORKING: Tested the email icon mailto link in the footer social icons row. ALL CHECKS PASSED. Test results: (1) href attribute exactly matches expected format: 'mailto:luca@essentialgemstones.com?subject=Contact%20Essential%20Gemstones' with proper URL encoding (%20 for spaces). (2) aria-label correctly contains: 'Email luca@essentialgemstones.com'. (3) title attribute also contains: 'Email luca@essentialgemstones.com'. (4) Both 'To' address (luca@essentialgemstones.com) and 'Subject' parameter (Contact Essential Gemstones) are present in the mailto URL. (5) DOM verification confirms the link is correctly rendered in the footer. (6) No console errors detected. (7) Screenshot captured showing footer with three social icons (Instagram, Facebook, Email). The implementation correctly pulls values from site.footer.contactEmail and site.footer.contactSubject with hard-coded fallbacks as specified. Feature is production-ready."
 

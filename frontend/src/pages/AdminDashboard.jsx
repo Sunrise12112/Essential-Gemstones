@@ -504,7 +504,11 @@ export default function AdminDashboard() {
         <SectionCard title="Footer & Contact" open={openSections.footer} onToggle={() => toggle('footer')}>
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label="Brand"><TextInput value={data.footer.brand} onChange={(v) => update(['footer','brand'], v)} /></Field>
-            <Field label="Contact email"><TextInput value={data.footer.email} onChange={(v) => update(['footer','email'], v)} /></Field>
+            <Field label="Newsletter / contact email (shown in text)"><TextInput value={data.footer.email} onChange={(v) => update(['footer','email'], v)} /></Field>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-4">
+            <Field label="Email icon — recipient"><TextInput value={data.footer.contactEmail} onChange={(v) => update(['footer','contactEmail'], v)} placeholder="luca@essentialgemstones.com" /></Field>
+            <Field label="Email icon — subject line"><TextInput value={data.footer.contactSubject} onChange={(v) => update(['footer','contactSubject'], v)} placeholder="Contact Essential Gemstones" /></Field>
           </div>
           <Field label="Tagline"><TextArea value={data.footer.tagline} onChange={(v) => update(['footer','tagline'], v)} rows={2} /></Field>
           <div className="grid sm:grid-cols-2 gap-4">

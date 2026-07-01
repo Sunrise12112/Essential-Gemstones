@@ -289,6 +289,8 @@ def default_site() -> dict:
             "newsletterKicker": "Stay Connected",
             "newsletterTitle": "Get the latest from the studio.",
             "email": "Essentialgemstones@googlegroups.com",
+            "contactEmail": "luca@essentialgemstones.com",
+            "contactSubject": "Contact Essential Gemstones",
             "donateTitle": "Support Luca\u2019s Dream",
             "donateText": "Every donation \u2014 big or small \u2014 helps keep Essential Gemstones growing.",
             "donateUrl": "https://donate.stripe.com/00w14g5vZfVo88f2mrgYU01",
