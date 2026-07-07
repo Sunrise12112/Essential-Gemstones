@@ -8,6 +8,7 @@ import { Field, TextInput, TextArea, SectionCard, ListReorder } from '../compone
 import MediaPicker from '../components/admin/MediaPicker';
 import AdminsManager from '../components/admin/AdminsManager';
 import SubscribersManager from '../components/admin/SubscribersManager';
+import UsersManager from '../components/admin/UsersManager';
 import { Switch } from '../components/ui/switch';
 
 const SECTION_LABELS = {
@@ -157,6 +158,13 @@ export default function AdminDashboard() {
         {can('manage_subscribers') && (
           <SectionCard title="Newsletter Subscribers" open={openSections.subscribers} onToggle={() => toggle('subscribers')}>
             <SubscribersManager isSuper={!!me?.isSuper} />
+          </SectionCard>
+        )}
+
+        {/* Members / Users */}
+        {can('manage_users') && (
+          <SectionCard title="Members (User Accounts)" open={openSections.members} onToggle={() => toggle('members')}>
+            <UsersManager />
           </SectionCard>
         )}
 

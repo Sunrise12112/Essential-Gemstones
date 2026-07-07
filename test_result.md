@@ -418,6 +418,127 @@ backend:
         agent: "testing"
         comment: "Subscribe endpoint correctly handles SMTP failures. Subscriber is saved to database even if email sending fails. Response includes error field with exception details when SMTP fails. In production testing, SMTP is working correctly (emails sent successfully), but error handling is implemented correctly for failure scenarios."
 
+
+  - task: "User registration endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/auth/register fully functional. All 6 test cases passed: (1) Valid registration returns 200 with token and user object containing id, fullName, email, isBanned=false, favorites=[], createdAt. passwordHash correctly excluded from response. (2) Duplicate email correctly returns 400 with 'An account with that email already exists'. (3) Short password (<6 chars) returns 400. (4) Empty fullName returns 400. (5) Malformed email returns 422 validation error. (6) Newsletter subscription persists correctly - email found in /api/admin/subscribers list. User token generation working correctly with role='user' claim."
+
+  - task: "User login endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/auth/login fully functional. All 3 test cases passed: (1) Valid login with correct email/password returns 200 with token and user object. (2) Wrong password returns 401 with 'Invalid email or password'. (3) Unknown email returns 401. Authentication working correctly."
+
+  - task: "User profile endpoint (/auth/me)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/auth/me fully functional. All 3 test cases passed: (1) With valid user token returns 200 with user object. (2) Without token returns 401. (3) With admin token (role != 'user') returns 401 with 'User token required'. JWT role separation working correctly - admin tokens cannot access user endpoints."
+
+  - task: "User profile update endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "PUT /api/auth/me fully functional. All 3 test cases passed: (1) Update fullName returns 200 and persists correctly. (2) Update password returns 200, new password works for login. (3) Short password (<6 chars) returns 400 validation error. Profile updates working correctly."
+
+  - task: "User favorites toggle endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/auth/favorites/{product_id} fully functional. All 5 test cases passed: (1) First toggle adds product, returns {favorited: true, favorites: ['cross-faith']}. (2) Second toggle removes product, returns {favorited: false, favorites: []}. (3) Can add different product (chakra). (4) Favorites persist correctly - verified via GET /api/auth/me. (5) Without token returns 401. Toggle functionality and persistence working correctly."
+
+  - task: "Admin user management - List users"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/admin/users fully functional. All test cases passed: (1) Master admin can list all users, returns array with correct user objects. (2) Without token returns 401. (3) Non-super admin without manage_users permission returns 403. (4) Non-super admin WITH manage_users permission returns 200 and can list users. Permission enforcement working correctly."
+
+  - task: "Admin user management - Update user (ban/unban)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "PUT /api/admin/users/{user_id} fully functional. Ban/unban feature working correctly: (1) Setting isBanned=true returns 200 with updated user object. (2) Banned user cannot login - returns 403 with 'Your account has been suspended.' (3) Banned user's existing token returns 403 when used. (4) Setting isBanned=false unbans user. (5) Unbanned user can login successfully. Permission enforcement working - requires manage_users permission."
+
+  - task: "Admin user management - Delete user"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "DELETE /api/admin/users/{user_id} fully functional. All 4 test cases passed: (1) Delete returns 200 with {ok: true}. (2) Deleted user's old token returns 401 when used (user no longer exists). (3) Deleted user cannot login - returns 401. (4) Deleting non-existent user returns 404. User deletion and cleanup working correctly."
+
+  - task: "Permissions metadata - manage_users permission"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/permissions correctly updated to include manage_users. metaPermissions now contains 5 items: sectionOrder, sectionVisibility, manage_admins, manage_subscribers, manage_users. Total permissions count is 19 (14 section permissions + 5 meta permissions). All permissions correctly listed in 'all' array."
+
+  - task: "JWT role separation and token security"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "JWT role separation fully functional. All 4 test cases passed: (1) User tokens have role='user' claim in JWT payload. (2) Admin tokens have isSuper=true and role='admin' claims. (3) User tokens cannot access /api/admin/* endpoints - returns 401 'Not an admin token'. (4) Admin tokens cannot access /api/auth/me - returns 401 'User token required'. Token-based access control working correctly, preventing cross-role access."
+
 frontend:
   - task: "Frontend integration"
     implemented: false
@@ -445,15 +566,15 @@ frontend:
 
 metadata:
   created_by: "testing_agent"
-  version: "1.3"
-  test_sequence: 4
+  version: "1.4"
+  test_sequence: 5
   run_ui: false
   backend_url: "https://gemstone-makeover.preview.emergentagent.com"
   test_date: "2026-07-01"
 
 test_plan:
   current_focus:
-    - "Footer email icon mailto behavior"
+    - "User authentication endpoints"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -470,5 +591,8 @@ agent_communication:
   - agent: "testing"
     message: "HERO VIDEO AUDIO BUG FIX - ✅ VERIFIED AND WORKING: Retested with WebM VP8/Vorbis video (headless Chromium compatible). ALL TESTS PASSED. Test results: (1) Video uploaded successfully via admin panel and loads correctly (readyState=4). (2) Initial state correct: video.muted=true, 'Tap for sound' overlay visible with opacity=1, video playing. (3) **BUG FIX CONFIRMED**: After clicking 'Tap for sound' button, video.muted successfully changes from true to false, enabling audio. (4) UI behavior correct: overlay disappears (opacity=0), 'Mute video' button appears in bottom-right corner. (5) Mute toggle works: clicking 'Mute video' sets muted=true again, 'Unmute video' button appears. (6) No console errors detected. Screenshots captured showing before/after states. The enableSound() function in Hero.jsx is working correctly - it sets video.muted=false, volume=1.0, and the video continues playing with audio enabled. Feature is production-ready."
   - agent: "testing"
+  - agent: "testing"
+    message: "USER AUTHENTICATION ENDPOINTS TESTING COMPLETE: All 44 comprehensive test cases passed (44/44) across 10 scenarios (A-J). Tested all new user account/authentication features: (A) User registration - valid registration, duplicate email detection, password/name validation, malformed email handling, newsletter subscription integration (6/6 passed). (B) User login - valid login, wrong password, unknown email (3/3 passed). (C) /auth/me endpoint - works with user token, rejects without token, rejects admin token with 'User token required' (3/3 passed). (D) Update profile - fullName update, password update with login verification, validation (3/3 passed). (E) Favorites toggle - add/remove favorites, persistence verification, authentication required (5/5 passed). (F) Admin user management - list users with permission enforcement, create viewer admin, grant manage_users permission, ban user (5/5 passed). (G) Banned user flow - login blocked, old token blocked, unban works, login after unban (4/4 passed). (H) Admin delete user - deletion works, old token invalid, login fails, 404 for non-existent (4/4 passed). (I) Permissions metadata - manage_users included (19 total: 14 sections + 5 meta) (1/1 passed). (J) JWT role separation - user token has role='user', admin token has isSuper=true/role='admin', cross-role access blocked (4/4 passed). CRITICAL FINDINGS: (1) JWT role separation working perfectly - user tokens cannot access admin endpoints, admin tokens cannot access user endpoints. (2) Banned user enforcement works on both login and existing tokens. (3) User deletion properly invalidates tokens. (4) Newsletter subscription integration working - new users automatically subscribed if opted in. (5) Permission system correctly enforces manage_users permission for non-super admins. NO ISSUES FOUND. All user authentication features are production-ready."
+
     message: "FOOTER EMAIL ICON MAILTO BEHAVIOR - ✅ VERIFIED AND WORKING: Tested the email icon mailto link in the footer social icons row. ALL CHECKS PASSED. Test results: (1) href attribute exactly matches expected format: 'mailto:luca@essentialgemstones.com?subject=Contact%20Essential%20Gemstones' with proper URL encoding (%20 for spaces). (2) aria-label correctly contains: 'Email luca@essentialgemstones.com'. (3) title attribute also contains: 'Email luca@essentialgemstones.com'. (4) Both 'To' address (luca@essentialgemstones.com) and 'Subject' parameter (Contact Essential Gemstones) are present in the mailto URL. (5) DOM verification confirms the link is correctly rendered in the footer. (6) No console errors detected. (7) Screenshot captured showing footer with three social icons (Instagram, Facebook, Email). The implementation correctly pulls values from site.footer.contactEmail and site.footer.contactSubject with hard-coded fallbacks as specified. Feature is production-ready."
 

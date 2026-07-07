@@ -23,6 +23,7 @@ const SECTION_LABELS = {
   sectionVisibility: 'Section show/hide',
   manage_admins: 'Manage admins',
   manage_subscribers: 'Newsletter subscribers',
+  manage_users: 'Members (users)',
 };
 
 export default function AdminsManager({ currentUser }) {

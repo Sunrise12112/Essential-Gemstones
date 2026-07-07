@@ -50,7 +50,7 @@ SECTION_PERMS = [
     "navbar", "hero", "products", "story", "promise", "chakra", "stats",
     "lavaMeaning", "founder", "craft", "faq", "gallery", "vip", "footer",
 ]
-META_PERMS = ["sectionOrder", "sectionVisibility", "manage_admins", "manage_subscribers"]
+META_PERMS = ["sectionOrder", "sectionVisibility", "manage_admins", "manage_subscribers", "manage_users"]
 ALL_PERMS = SECTION_PERMS + META_PERMS
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
@@ -98,10 +98,11 @@ def verify_password(pw: str, hashed: str) -> bool:
         return False
 
 
-def make_token(sub: str, is_super: bool, permissions: list[str], username: str) -> str:
+def make_token(sub: str, is_super: bool, permissions: list[str], username: str, role: str = "admin") -> str:
     payload = {
         "sub": sub,
         "username": username,
+        "role": role,
         "isSuper": is_super,
         "permissions": permissions,
         "iat": int(datetime.utcnow().timestamp()),
@@ -110,9 +111,18 @@ def make_token(sub: str, is_super: bool, permissions: list[str], username: str) 
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 
-async def require_admin(
-    creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
-) -> dict:
+def make_user_token(user_id: str, email: str) -> str:
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "role": "user",
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int((datetime.utcnow() + timedelta(days=JWT_DAYS)).timestamp()),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+def _decode_token(creds: Optional[HTTPAuthorizationCredentials]) -> dict:
     if not creds or not creds.credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     try:
@@ -121,6 +131,31 @@ async def require_admin(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     if not payload.get("sub"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    return payload
+
+
+async def require_admin(
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> dict:
+    payload = _decode_token(creds)
+    # Reject explicit user tokens; legacy admin tokens without role are still accepted.
+    if payload.get("role") == "user":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not an admin token")
+    return payload
+
+
+async def require_user(
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> dict:
+    payload = _decode_token(creds)
+    if payload.get("role") != "user":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User token required")
+    # Verify user still exists and is not banned
+    doc = await db.users.find_one({"_id": payload["sub"]})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User no longer exists")
+    if doc.get("isBanned"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your account has been suspended.")
     return payload
 
 
@@ -678,6 +713,192 @@ async def test_email(payload: dict, admin: dict = Depends(require_admin)) -> dic
         return {"ok": True}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------- USER ACCOUNTS ---------------- #
+
+
+class UserRegisterIn(BaseModel):
+    fullName: str
+    email: EmailStr
+    password: str
+    subscribeNewsletter: bool = True
+
+
+class UserLoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserProfileUpdate(BaseModel):
+    fullName: Optional[str] = None
+    password: Optional[str] = None
+
+
+class AdminUserUpdate(BaseModel):
+    isBanned: Optional[bool] = None
+    fullName: Optional[str] = None
+
+
+def user_to_public(doc: dict) -> dict:
+    return {
+        "id": doc["_id"],
+        "fullName": doc.get("fullName", ""),
+        "email": doc.get("email", ""),
+        "isBanned": bool(doc.get("isBanned")),
+        "favorites": doc.get("favorites", []),
+        "createdAt": doc.get("createdAt"),
+    }
+
+
+@app.post("/api/auth/register")
+async def auth_register(payload: UserRegisterIn) -> dict:
+    full_name = (payload.fullName or "").strip()
+    email = str(payload.email).strip().lower()
+    if len(full_name) < 2:
+        raise HTTPException(status_code=400, detail="Please enter your full name")
+    if len(payload.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        raise HTTPException(status_code=400, detail="An account with that email already exists")
+    doc = {
+        "_id": str(uuid.uuid4()),
+        "fullName": full_name,
+        "email": email,
+        "passwordHash": hash_password(payload.password),
+        "isBanned": False,
+        "favorites": [],
+        "createdAt": datetime.utcnow().isoformat(),
+    }
+    await db.users.insert_one(doc)
+
+    # Optional newsletter subscribe + welcome emails (best effort)
+    if payload.subscribeNewsletter:
+        already = await db.subscribers.find_one({"email": email}) is not None
+        if not already:
+            await db.subscribers.insert_one({
+                "_id": str(uuid.uuid4()),
+                "email": email,
+                "createdAt": datetime.utcnow().isoformat(),
+            })
+        try:
+            site = await get_site_doc()
+            footer = site.get("footer") or {}
+            admin_email = (footer.get("email") or SMTP_USER or "").strip()
+            brand = footer.get("brand") or "Essential Gemstones"
+            founder = (site.get("founder") or {}).get("title", "Luca")
+            founder_name = founder.replace("Hi, I\u2019m ", "").replace("Hi, I'm ", "").strip() or "Luca"
+            when_display = datetime.utcnow().strftime("%B %d, %Y at %H:%M UTC")
+            if admin_email:
+                await send_email(
+                    admin_email,
+                    f"New account: {full_name} ({email})",
+                    _admin_notify_html(f"{full_name} &lt;{email}&gt;", when_display),
+                    reply_to=email,
+                )
+            await send_email(email, f"Welcome to {brand}", _welcome_html(brand, founder_name))
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).exception("Welcome emails failed: %s", exc)
+
+    token = make_user_token(doc["_id"], doc["email"])
+    return {"token": token, "user": user_to_public(doc)}
+
+
+@app.post("/api/auth/login")
+async def auth_login(payload: UserLoginIn) -> dict:
+    email = str(payload.email).strip().lower()
+    doc = await db.users.find_one({"email": email})
+    if not doc or not verify_password(payload.password, doc.get("passwordHash", "")):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if doc.get("isBanned"):
+        raise HTTPException(status_code=403, detail="Your account has been suspended.")
+    token = make_user_token(doc["_id"], doc["email"])
+    return {"token": token, "user": user_to_public(doc)}
+
+
+@app.get("/api/auth/me")
+async def auth_me(user: dict = Depends(require_user)) -> dict:
+    doc = await db.users.find_one({"_id": user["sub"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"user": user_to_public(doc)}
+
+
+@app.put("/api/auth/me")
+async def auth_update_me(payload: UserProfileUpdate, user: dict = Depends(require_user)) -> dict:
+    updates: dict[str, Any] = {}
+    if payload.fullName is not None:
+        name = payload.fullName.strip()
+        if len(name) < 2:
+            raise HTTPException(status_code=400, detail="Please enter your full name")
+        updates["fullName"] = name
+    if payload.password is not None:
+        if len(payload.password) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+        updates["passwordHash"] = hash_password(payload.password)
+    if updates:
+        await db.users.update_one({"_id": user["sub"]}, {"$set": updates})
+    doc = await db.users.find_one({"_id": user["sub"]})
+    return {"user": user_to_public(doc)}
+
+
+@app.post("/api/auth/favorites/{product_id}")
+async def toggle_favorite(product_id: str, user: dict = Depends(require_user)) -> dict:
+    if not product_id:
+        raise HTTPException(status_code=400, detail="Missing product id")
+    doc = await db.users.find_one({"_id": user["sub"]})
+    favorites = list(doc.get("favorites", []) if doc else [])
+    if product_id in favorites:
+        favorites.remove(product_id)
+        favorited = False
+    else:
+        favorites.append(product_id)
+        favorited = True
+    await db.users.update_one({"_id": user["sub"]}, {"$set": {"favorites": favorites}})
+    return {"favorited": favorited, "favorites": favorites}
+
+
+# ---------------- ADMIN: USER MANAGEMENT ---------------- #
+
+
+@app.get("/api/admin/users")
+async def list_users(admin: dict = Depends(require_admin)) -> list[dict]:
+    if not (admin.get("isSuper") or "manage_users" in (admin.get("permissions") or [])):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    out: list[dict] = []
+    cursor = db.users.find().sort("createdAt", -1)
+    async for doc in cursor:
+        out.append(user_to_public(doc))
+    return out
+
+
+@app.put("/api/admin/users/{user_id}")
+async def admin_update_user(user_id: str, payload: AdminUserUpdate, admin: dict = Depends(require_admin)) -> dict:
+    if not (admin.get("isSuper") or "manage_users" in (admin.get("permissions") or [])):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    doc = await db.users.find_one({"_id": user_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    update: dict[str, Any] = {}
+    if payload.isBanned is not None:
+        update["isBanned"] = bool(payload.isBanned)
+    if payload.fullName is not None:
+        update["fullName"] = payload.fullName.strip()
+    if update:
+        await db.users.update_one({"_id": user_id}, {"$set": update})
+    new_doc = await db.users.find_one({"_id": user_id})
+    return user_to_public(new_doc)
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, admin: dict = Depends(require_admin)) -> dict:
+    if not (admin.get("isSuper") or "manage_users" in (admin.get("permissions") or [])):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    res = await db.users.delete_one({"_id": user_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True}
 
 
 # ---------------- MIDDLEWARE ---------------- #
