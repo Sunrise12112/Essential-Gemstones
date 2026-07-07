@@ -63,7 +63,7 @@ export default function VIP() {
                   <span className="text-xs tracking-[0.3em] uppercase">Sign up to unlock</span>
                 </div>
                 <h3 className="font-serif text-2xl md:text-3xl mb-3">Exclusive member perks</h3>
-                <p className="text-[#d4c5af] leading-relaxed mb-5">Discount code, early access to new drops, free bracelet re-stringing, and studio stories \u2014 free with your Essential Gemstones account.</p>
+                <p className="text-[#d4c5af] leading-relaxed mb-5">Discount code, early access to new drops, free bracelet re-stringing, and studio stories — free with your Essential Gemstones account.</p>
                 <span className="inline-flex items-center gap-2 px-6 py-3 bg-[#c9a876] text-[#1a1410] rounded-full text-sm tracking-wider uppercase font-medium group-hover:bg-[#d6b885] transition-colors">
                   Join free
                 </span>
