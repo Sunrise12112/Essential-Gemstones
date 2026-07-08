@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { MessageCircle, X, Send, Sparkles, Gem, Loader2, Plus, History, Trash2, Pencil, Check } from 'lucide-react';
+import { MessageCircle, X, Send, Sparkles, Gem, Loader2, Plus, History, Trash2, Pencil, Check, Lock } from 'lucide-react';
 import { API } from '../../lib/api';
 import { getClientId, chatAuthHeaders } from '../../lib/chatIdentity';
 import { useAuth } from '../../context/AuthContext';
@@ -11,7 +11,7 @@ const MODES = [
 ];
 
 export default function ChatBubble() {
-  const { user } = useAuth();
+  const { user, openAuthModal } = useAuth();
   const [open, setOpen] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [mode, setMode] = useState('ask-luca');
@@ -32,16 +32,17 @@ export default function ChatBubble() {
   const currentSession = sessions.find((s) => s.id === currentSessionId);
 
   const loadSessions = useCallback(async () => {
+    if (!user) { setSessions([]); return; }
     try {
       const res = await fetch(`${API}/chat/sessions?mode=${mode}`, { headers: chatAuthHeaders() });
       if (res.ok) setSessions(await res.json());
     } catch (e) { /* ignore */ }
-  }, [mode]);
+  }, [mode, user]);
 
   useEffect(() => {
-    if (open) loadSessions();
+    if (open && user) loadSessions();
     // Also refresh when principal changes (login/logout)
-  }, [open, user?.id, loadSessions]);
+  }, [open, user, loadSessions]);
 
   useEffect(() => {
     // When mode changes, start fresh
@@ -175,11 +176,46 @@ export default function ChatBubble() {
   return (
     <>
       <button onClick={() => setOpen(!open)} aria-label={open ? 'Close chat' : 'Open chat'}
+        data-testid="chat-bubble-toggle"
         className={`fixed bottom-6 right-6 z-[60] w-14 h-14 rounded-full shadow-2xl flex items-center justify-center transition-all duration-300 ${open ? 'bg-[#faf6f0] text-[#1a1410]' : 'bg-[#1a1410] text-[#c9a876] hover:scale-105'}`}>
         {open ? <X className="w-6 h-6" /> : <MessageCircle className="w-6 h-6" />}
       </button>
 
-      {open && (
+      {open && !user && (
+        <div className="fixed bottom-24 right-6 z-[59] w-[calc(100vw-3rem)] sm:w-[420px] bg-[#faf6f0] rounded-3xl shadow-2xl border border-[#e8dfd1] overflow-hidden animate-in slide-in-from-bottom-4" data-testid="chat-login-gate">
+          <div className="bg-[#1a1410] text-[#faf6f0] px-5 py-4 flex items-center gap-2">
+            <Gem className="w-4 h-4 text-[#c9a876]" />
+            <span className="text-xs tracking-[0.2em] uppercase text-[#c9a876]">Members only</span>
+          </div>
+          <div className="p-6 text-center">
+            <div className="w-14 h-14 rounded-full bg-[#f1e7d6] flex items-center justify-center mx-auto mb-4">
+              <Lock className="w-6 h-6 text-[#6b4f3a]" />
+            </div>
+            <h3 className="text-xl text-[#1a1410] mb-2" style={{ fontFamily: 'Cormorant Garamond, serif' }}>
+              Sign in to chat with Luca
+            </h3>
+            <p className="text-sm text-[#6b4f3a] leading-relaxed mb-5">
+              Your AI conversations are saved to your account so Luca remembers you every time. Create a free member account or sign in to continue.
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                data-testid="chat-gate-signup-btn"
+                onClick={() => { setOpen(false); openAuthModal('register'); }}
+                className="w-full py-2.5 rounded-full bg-[#1a1410] text-[#faf6f0] text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors">
+                Create free account
+              </button>
+              <button
+                data-testid="chat-gate-login-btn"
+                onClick={() => { setOpen(false); openAuthModal('login'); }}
+                className="w-full py-2.5 rounded-full border border-[#1a1410] text-[#1a1410] text-sm tracking-wider uppercase hover:bg-[#1a1410] hover:text-[#faf6f0] transition-colors">
+                Sign in
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {open && user && (
         <div className="fixed bottom-24 right-6 z-[59] w-[calc(100vw-3rem)] sm:w-[440px] h-[75vh] max-h-[720px] bg-[#faf6f0] rounded-3xl shadow-2xl border border-[#e8dfd1] flex flex-col overflow-hidden animate-in slide-in-from-bottom-4">
           {/* Header */}
           <div className="bg-[#1a1410] text-[#faf6f0] px-4 py-3 flex-shrink-0">

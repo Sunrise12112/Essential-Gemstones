@@ -980,6 +980,24 @@ def _principal_key(request: Request) -> str:
     return f"anon:{uuid.uuid4()}"
 
 
+def _require_member_key(request: Request) -> str:
+    """Require a valid user or admin JWT for chat access. Anonymous is rejected."""
+    auth = request.headers.get("Authorization") or ""
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Please sign in to use the AI chat.")
+    try:
+        claims = jwt.decode(auth.split(" ", 1)[1], JWT_SECRET, algorithms=[JWT_ALG])
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Your session has expired. Please sign in again.")
+    role = claims.get("role")
+    sub = claims.get("sub")
+    if not sub:
+        raise HTTPException(status_code=401, detail="Please sign in to use the AI chat.")
+    if role == "user":
+        return f"user:{sub}"
+    return f"admin:{sub}"
+
+
 def _fallback_title_from(text: str) -> str:
     t = (text or "").strip().replace("\n", " ")
     if len(t) > 60:
@@ -1127,6 +1145,10 @@ async def chat_stream(payload: ChatMessageIn, request: Request) -> StreamingResp
         if claims.get("role") == "user":
             raise HTTPException(status_code=403, detail="Admins only")
         user_id = f"admin:{claims.get('sub')}"
+    else:
+        # Public chat modes now require member (or admin) auth
+        member_key = _require_member_key(request)
+        user_id = member_key
 
     text = (payload.message or "").strip()
     if not text:
@@ -1232,10 +1254,10 @@ async def chat_stream(payload: ChatMessageIn, request: Request) -> StreamingResp
 
 @app.get("/api/chat/session/{session_id}")
 async def get_chat_session(session_id: str, request: Request) -> dict:
+    user_key = _require_member_key(request)
     doc = await db.chat_sessions.find_one({"_id": session_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Session not found")
-    user_key = _principal_key(request)
     owner = doc.get("userKey")
     if owner and owner != user_key:
         raise HTTPException(status_code=403, detail="Not your chat")
@@ -1251,7 +1273,7 @@ async def get_chat_session(session_id: str, request: Request) -> dict:
 
 @app.get("/api/chat/sessions")
 async def list_my_chat_sessions(request: Request, mode: Optional[str] = None, limit: int = 100) -> list[dict]:
-    user_key = _principal_key(request)
+    user_key = _require_member_key(request)
     query: dict[str, Any] = {"userKey": user_key}
     if mode:
         query["mode"] = mode
@@ -1278,10 +1300,10 @@ class SessionRenameIn(BaseModel):
 
 @app.put("/api/chat/session/{session_id}")
 async def rename_chat_session(session_id: str, payload: SessionRenameIn, request: Request) -> dict:
+    user_key = _require_member_key(request)
     doc = await db.chat_sessions.find_one({"_id": session_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Session not found")
-    user_key = _principal_key(request)
     owner = doc.get("userKey")
     if owner and owner != user_key:
         raise HTTPException(status_code=403, detail="Not your chat")
@@ -1296,10 +1318,10 @@ async def rename_chat_session(session_id: str, payload: SessionRenameIn, request
 
 @app.delete("/api/chat/session/{session_id}")
 async def delete_my_chat_session(session_id: str, request: Request) -> dict:
+    user_key = _require_member_key(request)
     doc = await db.chat_sessions.find_one({"_id": session_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Session not found")
-    user_key = _principal_key(request)
     owner = doc.get("userKey")
     if owner and owner != user_key:
         raise HTTPException(status_code=403, detail="Not your chat")
