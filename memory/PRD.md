@@ -22,6 +22,7 @@ Recreate essentialgemstones.com pixel-perfectly with an artisan, earthy aestheti
 - 2026-02: Per-user + per-admin persistent chat session memory (create/list/rename/delete)
 - 2026-02: Shopping cart removed at user request
 - 2026-02-08: **AI Chat locked behind member auth** — public chat modes now require a valid user or admin JWT. Anonymous X-Client-Id requests are rejected with HTTP 401. Frontend shows a "Members only" login gate with Signup/Login CTAs. All chat session CRUD endpoints require member auth. Admin-writer path unchanged.
+- 2026-02-08: **Fix: "Not an admin token" on admin save** — Axios interceptor in `frontend/src/lib/api.js` was preferring `eg_user_token` for non-`/admin` paths, so `PUT /api/site`, `/subscribers`, `/users`, `/upload`, `/ai-edit` were sent with the member token when both were present. Interceptor now forces the admin token when browser is on `/admin/*` OR when the target route is any known admin-only path. Verified with live browser test: PUT /api/site returns 200 with dual tokens in localStorage.
 
 ## Key API Endpoints
 - Auth: `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/favorites/{id}`
