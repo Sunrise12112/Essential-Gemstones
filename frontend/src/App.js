@@ -6,10 +6,12 @@ import AdminLogin from './pages/AdminLogin';
 import AdminDashboard from './pages/AdminDashboard';
 import { SiteProvider } from './context/SiteContext';
 import { AuthProvider } from './context/AuthContext';
+import { CartProvider } from './context/CartContext';
 import { Toaster } from './components/ui/toaster';
 import { toast } from './hooks/use-toast';
 import AuthModal from './components/auth/AuthModal';
 import SignupPrompt from './components/auth/SignupPrompt';
+import CartDrawer from './components/cart/CartDrawer';
 
 function App() {
   useEffect(() => {
@@ -24,16 +26,19 @@ function App() {
     <div className="App">
       <SiteProvider>
         <AuthProvider>
-          <BrowserRouter>
-            <Routes>
-              <Route path="/" element={<Home />} />
-              <Route path="/admin" element={<AdminLogin />} />
-              <Route path="/admin/dashboard" element={<AdminDashboard />} />
-            </Routes>
-            <AuthModal />
-            <SignupPrompt />
-          </BrowserRouter>
-          <Toaster />
+          <CartProvider>
+            <BrowserRouter>
+              <Routes>
+                <Route path="/" element={<Home />} />
+                <Route path="/admin" element={<AdminLogin />} />
+                <Route path="/admin/dashboard" element={<AdminDashboard />} />
+              </Routes>
+              <AuthModal />
+              <SignupPrompt />
+              <CartDrawer />
+            </BrowserRouter>
+            <Toaster />
+          </CartProvider>
         </AuthProvider>
       </SiteProvider>
     </div>

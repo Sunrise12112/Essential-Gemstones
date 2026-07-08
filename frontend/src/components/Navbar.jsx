@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Menu, X, Gem, User, LogOut, Sparkles, ChevronDown } from 'lucide-react';
+import { Menu, X, Gem, User, LogOut, Sparkles, ChevronDown, ShoppingBag } from 'lucide-react';
 import { useSite } from '../context/SiteContext';
 import { useAuth } from '../context/AuthContext';
+import { useCart } from '../context/CartContext';
 
 export default function Navbar() {
   const { site } = useSite();
   const { user, logout, openAuthModal } = useAuth();
+  const { count: cartCount, setOpen: setCartOpen } = useCart();
   const nav = site.navbar || {};
   const links = nav.links || [];
   const [scrolled, setScrolled] = useState(false);
@@ -44,6 +46,13 @@ export default function Navbar() {
             </a>
           ))}
 
+          <button onClick={() => setCartOpen(true)} aria-label="Open cart" className="relative w-10 h-10 rounded-full hover:bg-[#f3ece0] flex items-center justify-center text-[#3d3128] hover:text-[#6b4f3a] transition-colors">
+            <ShoppingBag className="w-5 h-5" />
+            {cartCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#c9483d] text-[#faf6f0] text-[10px] font-medium flex items-center justify-center">{cartCount}</span>
+            )}
+          </button>
+
           {user ? (
             <div className="relative" data-user-menu>
               <button onClick={(e) => { e.stopPropagation(); setUserMenu(!userMenu); }} className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full bg-[#faf6f0] border border-[#e8dfd1] hover:border-[#c9a876] transition-colors">
@@ -75,9 +84,15 @@ export default function Navbar() {
           )}
         </nav>
 
-        <button className="md:hidden text-[#2c2420]" onClick={() => setOpen(!open)} aria-label="menu">
-          {open ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-        </button>
+        <div className="md:hidden flex items-center gap-1">
+          <button onClick={() => setCartOpen(true)} aria-label="Open cart" className="relative w-10 h-10 rounded-full flex items-center justify-center text-[#3d3128]">
+            <ShoppingBag className="w-5 h-5" />
+            {cartCount > 0 && <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#c9483d] text-[#faf6f0] text-[10px] font-medium flex items-center justify-center">{cartCount}</span>}
+          </button>
+          <button className="text-[#2c2420] w-10 h-10 flex items-center justify-center" onClick={() => setOpen(!open)} aria-label="menu">
+            {open ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+          </button>
+        </div>
       </div>
 
       {open && (

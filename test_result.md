@@ -625,6 +625,31 @@ backend:
         agent: "testing"
         comment: "✅ CLAUDE SONNET 4.5 MIGRATION VERIFIED: Backend successfully switched from Gemini to Anthropic Claude Sonnet 4.5 (claude-sonnet-4-5) due to previous AuthenticationError 'key not allowed to access model'. All 5 comprehensive test scenarios passed (10/10 runs - each test run twice). TEST RESULTS: (Test 1) ask-luca mode - PASSED both runs: Returns HTTP 200 with text/event-stream, emits 'event: session' with UUID, streams data chunks (2-4 chunks), terminates with 'event: done'. Reply length 250-295 chars, mentions lava stone care topics (water, chemicals, cleaning, wiping with cloth). (Test 2) stone-guide mode - PASSED both runs: Returns 200 SSE stream, reply length 729-1012 chars, mentions Red Jasper and 7 Chakra Lava Stone Bracelet for grounding. (Test 3) admin-writer mode - PASSED both runs: Admin login successful (password '1121211221'), admin token authentication working, returns 200 SSE stream with product description (209-295 chars) mentioning amethyst, lava stone, bracelet. (Test 4) Prompt voice rules - PASSED both runs: NO forbidden pronouns (she/her/hers/herself) found, NO age qualifiers (nine-year-old, young founder, kid founder, young boy) found, correct pronouns (he/him/his) present. (Test 5) No auth error propagation - PASSED: ZERO occurrences of 'AuthenticationError', 'key not allowed', 'OpenAIException', 'not allowed to access model' in any response. CRITICAL FINDINGS: (1) Claude Sonnet 4.5 integration working correctly with emergentintegrations library (CHAT_PROVIDER='anthropic', CHAT_MODEL='claude-sonnet-4-5' at lines 945-946). (2) SSE streaming format correct across all modes. (3) All three chat modes operational (ask-luca, stone-guide, admin-writer). (4) Voice rules enforced correctly by Claude. (5) NO authentication errors - migration successful. NO ISSUES FOUND. Claude Sonnet 4.5 chat endpoint is production-ready."
 
+  - task: "AI edit site - POST /api/admin/ai-edit endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ POST /api/admin/ai-edit endpoint fully functional. Comprehensive testing completed with 18 test scenarios. PASSED: 16/18 tests (88.9%). KEY FINDINGS: (1) Authentication working correctly - 401 without token, 401 with user token (not-an-admin), 200 with admin token. (2) Basic edit functionality working - successfully changed hero.subtitle to 'Handmade with heart in Ohio.' with correct response structure (applied array with path/value, snapshot dict). (3) Undo functionality working - POST /api/admin/ai-edit/undo restores site from snapshot correctly. (4) Nested/array edits working - successfully edited products.items[0].description with path 'products.items[0].description'. (5) Section visibility toggle working - successfully set sectionVisibility.gallery to false. (6) Validation working correctly - empty message returns 400 'Empty message', 5000-char message returns 400 'Message too long'. (7) Safety working - dangerous instruction 'Delete the entire MongoDB database' returns 200 with applied=[], site unchanged, summary explains refusal. (8) Voice rules enforced - founder text edits contain zero forbidden pronouns (she/her/hers) and zero age qualifiers (nine-year-old, young founder, kid founder). (9) Claude Sonnet 4.5 integration working correctly (CHAT_PROVIDER='anthropic', CHAT_MODEL='claude-sonnet-4-5'). MINOR NOTES: Test 9 (product description) - AI used 'ground your energy' instead of 'grounding energy', semantically equivalent (LLM non-determinism). Test 16 (undo without body) - returns 422 (Pydantic validation) instead of 400, which is correct FastAPI behavior for missing required fields. Response structure verified: {summary: string, applied: [{path: string, value: any}], failed: [{edit: object, reason: string}], snapshot: object}. All edits persist correctly to MongoDB. Feature is production-ready."
+
+  - task: "AI edit site - POST /api/admin/ai-edit/undo endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ POST /api/admin/ai-edit/undo endpoint fully functional. All undo test scenarios passed. KEY FINDINGS: (1) Authentication working correctly - 401 without token, 200 with admin token. (2) Undo functionality working - successfully restores site content from snapshot. Tested with hero.subtitle, products.items[0].description, and sectionVisibility.gallery - all restored correctly. (3) Validation working - empty body {} returns 422 (Pydantic validation for missing required field 'snapshot'), empty snapshot dict {} returns 400 'Missing snapshot', snapshot=null returns 422 (Pydantic validation for invalid dict type). (4) Persistence working - all undo operations persist correctly to MongoDB, verified with subsequent GET /api/site calls. (5) Response structure correct: {ok: true}. Edge cases handled correctly. Feature is production-ready."
+
+
 frontend:
   - task: "Frontend integration"
     implemented: false
@@ -652,15 +677,15 @@ frontend:
 
 metadata:
   created_by: "testing_agent"
-  version: "1.7"
-  test_sequence: 8
+  version: "1.8"
+  test_sequence: 9
   run_ui: false
   backend_url: "https://gemstone-makeover.preview.emergentagent.com"
   test_date: "2026-07-01"
 
 test_plan:
   current_focus:
-    - "Claude Sonnet 4.5 chat endpoint migration verification"
+    - "AI edit site endpoints - POST /api/admin/ai-edit and POST /api/admin/ai-edit/undo"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -690,5 +715,9 @@ agent_communication:
     message: "GEMINI CHAT PROMPT FIXES VERIFICATION COMPLETE: All 5 comprehensive test cases passed (10/10 runs total - each test run twice to account for LLM non-determinism). Verified the AI system prompt fixes for pronoun correctness and age descriptor removal. KEY FINDINGS: (1) PRONOUN CORRECTNESS: 100% success rate across all 10 runs. Luca consistently referred to with he/him/his pronouns. Zero instances of forbidden pronouns (she/her/they) found in any response. (2) AGE DESCRIPTOR REMOVAL: 100% success rate. Zero instances of age-forward descriptors ('nine-year-old', 'young founder', 'kid founder', 'young boy', etc.) in any response except when visitor explicitly asks about age (Test 3). (3) AGE QUESTION HANDLING: Direct age questions correctly answered with age information while maintaining correct pronouns. (4) CROSS-MODE CONSISTENCY: Prompt fixes working correctly in all three modes (ask-luca, stone-guide, admin-writer). (5) SSE STREAMING: Verified correct format with 'event: session', streamed 'data:' chunks, and terminal 'event: done'. All replies meaningful (>30 chars). TECHNICAL DETAILS: System prompts in /app/backend/server.py (lines 1014-1020) correctly enforce voice rules. The _system_prompt_for() function applies these rules to all three chat modes. CONCLUSION: The prompt fixes are production-ready and working correctly. No issues found. Feature ready for user acceptance."
 
   - agent: "testing"
+
+  - agent: "testing"
+    message: "AI EDIT SITE ENDPOINTS TESTING COMPLETE: Comprehensive testing of POST /api/admin/ai-edit and POST /api/admin/ai-edit/undo endpoints completed with 18 test scenarios. PASSED: 16/18 tests (88.9%). Both endpoints are fully functional and production-ready. DETAILED TEST RESULTS: (Auth Tests 1-3) All passed - 401 without token, 401 with user token, admin login successful. (Basic Edit Tests 4-6) All passed - GET /api/site working, AI edit changed hero.subtitle to 'Handmade with heart in Ohio.', change persisted to DB. (Undo Tests 7-8) All passed - undo restored original hero.subtitle correctly. (Nested/Array Edit Tests 9-10) Test 9 minor note (see below), Test 10 passed - undo restored product description. (Section Visibility Tests 11-12) All passed - AI edit set sectionVisibility.gallery to false, undo restored to true. (Malformed/Safety Tests 13-15) All passed - empty message returns 400, 5000-char message returns 400, dangerous instruction safely refused with applied=[]. (Undo Edge Cases 16-17) Test 16 minor note (see below), Test 17 passed - 401 without token. (Voice Rules Test 18) Passed - founder text edits contain zero forbidden pronouns/age qualifiers. MINOR NOTES: (Test 9) AI used 'ground your energy' instead of 'grounding energy' - semantically equivalent, LLM non-determinism, not a bug. (Test 16) Returns 422 (Pydantic validation) instead of 400 for missing required field - correct FastAPI behavior. CRITICAL FINDINGS: (1) Claude Sonnet 4.5 integration working correctly with structured system prompt. (2) Response structure correct: {summary, applied: [{path, value}], failed: [{edit, reason}], snapshot}. (3) Path syntax working: dot notation (hero.subtitle), array indices (products.items[0].description), nested paths (sectionVisibility.gallery). (4) All edits persist correctly to MongoDB. (5) Undo restores from snapshot correctly. (6) Voice rules enforced in AI responses. (7) Safety guardrails working - dangerous instructions refused. NO MAJOR ISSUES FOUND. Feature is production-ready."
+
     message: "CLAUDE SONNET 4.5 MIGRATION VERIFICATION COMPLETE: Backend successfully migrated from Gemini to Anthropic Claude Sonnet 4.5 to resolve AuthenticationError 'key not allowed to access model'. All 5 comprehensive test scenarios passed (10/10 runs - each test run twice). DETAILED TEST RESULTS: (Test 1) ask-luca mode bracelet care - PASSED both runs: HTTP 200, text/event-stream content-type, correct SSE structure (event: session → data chunks → event: done), reply length 250-295 chars, mentions lava stone care (water, chemicals, cleaning, cloth). (Test 2) stone-guide mode grounding - PASSED both runs: HTTP 200, SSE streaming working, reply length 729-1012 chars, mentions Red Jasper and 7 Chakra Lava Stone Bracelet for grounding. (Test 3) admin-writer mode with admin auth - PASSED both runs: Admin login successful (password '1121211221'), Bearer token authentication working, HTTP 200, reply length 209-295 chars, product description mentions amethyst/lava/stone/bracelet. (Test 4) Prompt voice rules - PASSED both runs: ZERO forbidden pronouns (she/her/hers/herself), ZERO age qualifiers (nine-year-old, young founder, kid founder, young boy), correct pronouns (he/him/his) present. (Test 5) No auth error propagation - PASSED: ZERO occurrences of 'AuthenticationError', 'key not allowed', 'OpenAIException', 'not allowed to access model', 'permission denied', 'invalid api key' in any response. CRITICAL FINDINGS: (1) Claude Sonnet 4.5 integration fully operational (CHAT_PROVIDER='anthropic', CHAT_MODEL='claude-sonnet-4-5' at server.py lines 945-946). (2) SSE streaming format correct across all modes. (3) All three chat modes working (ask-luca, stone-guide, admin-writer). (4) Voice rules enforced correctly by Claude. (5) NO authentication errors - migration successful. NO ISSUES FOUND. Claude Sonnet 4.5 chat endpoint is production-ready."
 

@@ -940,6 +940,9 @@ async def shutdown_db_client() -> None:
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
 from fastapi.responses import StreamingResponse
+import copy as _copy
+import json as _json
+import re as _re
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 CHAT_PROVIDER = "anthropic"
@@ -1222,4 +1225,189 @@ async def admin_delete_chat_session(session_id: str, admin: dict = Depends(requi
     res = await db.chat_sessions.delete_one({"_id": session_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+# ---------------- AI SITE EDITOR (auto-apply with undo) ---------------- #
+
+
+class AIEditIn(BaseModel):
+    message: str
+
+
+class AIUndoIn(BaseModel):
+    snapshot: dict
+
+
+def _extract_json(text: str) -> Optional[dict]:
+    """Best-effort JSON extraction from an LLM reply."""
+    if not text:
+        return None
+    text = text.strip()
+    # Try raw
+    try:
+        return _json.loads(text)
+    except _json.JSONDecodeError:
+        pass
+    # Try fenced markdown ```json ... ```
+    m = _re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
+    if m:
+        try:
+            return _json.loads(m.group(1))
+        except _json.JSONDecodeError:
+            pass
+    # Fallback: first { ... last }
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return _json.loads(text[start : end + 1])
+        except _json.JSONDecodeError:
+            return None
+    return None
+
+
+def _set_at_path(root: dict, path: str, value: Any) -> None:
+    """Set value at dotted path with optional [n] array indices.
+
+    Examples:
+      hero.subtitle
+      products.items[0].description
+      sectionVisibility.faq
+    """
+    segments = path.split(".")
+    cur: Any = root
+    for i, seg in enumerate(segments):
+        is_last = i == len(segments) - 1
+        m = _re.match(r"^([^\[\]]+)(?:\[(\d+)\])?$", seg)
+        if not m:
+            raise ValueError(f"Bad path segment: {seg}")
+        key = m.group(1)
+        idx = m.group(2)
+        if idx is None:
+            if is_last:
+                cur[key] = value
+                return
+            nxt = cur.get(key)
+            if not isinstance(nxt, dict):
+                nxt = {}
+                cur[key] = nxt
+            cur = nxt
+        else:
+            n = int(idx)
+            arr = cur.get(key)
+            if not isinstance(arr, list):
+                arr = []
+                cur[key] = arr
+            while len(arr) <= n:
+                arr.append({})
+            if is_last:
+                arr[n] = value
+                return
+            if not isinstance(arr[n], (dict, list)):
+                arr[n] = {}
+            cur = arr[n]
+
+
+@app.post("/api/admin/ai-edit")
+async def ai_edit_site(payload: AIEditIn, admin: dict = Depends(require_admin)) -> dict:
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=503, detail="AI is not configured")
+    text = (payload.message or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty message")
+    if len(text) > 4000:
+        raise HTTPException(status_code=400, detail="Message too long")
+
+    site = await get_site_doc()
+    snapshot = _copy.deepcopy(site)
+
+    schema_keys = list(default_site().keys())
+    system_prompt = (
+        "You are the site editor for Essential Gemstones, a handmade lava-stone bracelet brand founded by Luca (he/him). "
+        "You EDIT the site content in response to instructions from the admin.\n\n"
+        "VOICE: warm, earthy, sincere, short sentences. No exclamation-heavy hype. No emojis. Never refer to Luca as she/her/they. Never lead descriptions of Luca with his age (no \"nine-year-old\", \"young founder\").\n\n"
+        "OUTPUT FORMAT: Respond with ONLY a single JSON object (no prose, no code fences) in this exact shape:\n"
+        "{\n  \"summary\": \"<one-sentence description of what you changed>\",\n"
+        "  \"edits\": [\n    {\"path\": \"<dotted path>\", \"value\": <new value: string | number | boolean | array | object>}\n  ]\n}\n\n"
+        "PATH SYNTAX:\n"
+        "- Dot notation to descend into objects. Bracket [n] to select an array index. Example: products.items[0].description, sectionVisibility.faq, sectionOrder.\n"
+        "- To replace an entire array, set path to the array key and value to the new array.\n"
+        f"- Top-level keys you may edit: {schema_keys}.\n\n"
+        "RULES:\n"
+        "- Make MINIMAL, TARGETED edits. Only change what the admin asked for. Do not rewrite unrelated fields.\n"
+        "- Preserve existing structure. Do not remove keys the site uses. Never invent fields the schema doesn't have.\n"
+        "- If the admin asks for something impossible or unsafe, return {\"summary\": \"<explain>\", \"edits\": []} and no edits.\n"
+        "- If the admin asks you to remove something, either set the string to \"\" or omit the item from the array by outputting the new array.\n\n"
+        "CURRENT SITE CONTENT (JSON):\n"
+        + _json.dumps(site, ensure_ascii=False)
+    )
+
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"ai-edit-{uuid.uuid4()}",
+        system_message=system_prompt,
+    ).with_model(CHAT_PROVIDER, CHAT_MODEL)
+
+    try:
+        reply = await chat.send_message(UserMessage(text=text))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"AI request failed: {exc}")
+
+    parsed = _extract_json(reply)
+    if not parsed or not isinstance(parsed, dict):
+        return {"summary": "The assistant did not return a valid edit plan.", "applied": [], "failed": [], "snapshot": snapshot, "raw": reply[:800]}
+
+    summary = str(parsed.get("summary") or "").strip()
+    edits = parsed.get("edits") or []
+    if not isinstance(edits, list):
+        edits = []
+
+    applied: list[dict] = []
+    failed: list[dict] = []
+    updated = _copy.deepcopy(site)
+    allowed = set(default_site().keys())
+    for e in edits:
+        if not isinstance(e, dict):
+            failed.append({"edit": e, "reason": "not an object"})
+            continue
+        path = str(e.get("path") or "").strip()
+        if not path:
+            failed.append({"edit": e, "reason": "missing path"})
+            continue
+        top = path.split(".")[0].split("[")[0]
+        if top not in allowed:
+            failed.append({"edit": e, "reason": f"top-level key '{top}' not editable"})
+            continue
+        try:
+            _set_at_path(updated, path, e.get("value"))
+            applied.append({"path": path, "value": e.get("value")})
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"edit": e, "reason": str(exc)})
+
+    if applied:
+        # Persist
+        update_doc = {k: v for k, v in updated.items() if k in allowed}
+        update_doc["updatedAt"] = datetime.utcnow().isoformat()
+        await db.site.update_one({"_id": "main"}, {"$set": update_doc}, upsert=True)
+
+    return {
+        "summary": summary or (f"Applied {len(applied)} edit(s)." if applied else "No changes applied."),
+        "applied": applied,
+        "failed": failed,
+        "snapshot": snapshot,
+    }
+
+
+@app.post("/api/admin/ai-edit/undo")
+async def ai_edit_undo(payload: AIUndoIn, admin: dict = Depends(require_admin)) -> dict:
+    snap = payload.snapshot or {}
+    if not isinstance(snap, dict) or not snap:
+        raise HTTPException(status_code=400, detail="Missing snapshot")
+    allowed = set(default_site().keys())
+    update_doc = {k: v for k, v in snap.items() if k in allowed}
+    if not update_doc:
+        raise HTTPException(status_code=400, detail="Empty snapshot")
+    update_doc["updatedAt"] = datetime.utcnow().isoformat()
+    await db.site.update_one({"_id": "main"}, {"$set": update_doc}, upsert=True)
     return {"ok": True}
