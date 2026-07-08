@@ -489,21 +489,60 @@ export default function AdminDashboard() {
             <Field label="CTA label"><TextInput value={data.vip.ctaLabel} onChange={(v) => update(['vip','ctaLabel'], v)} /></Field>
             <Field label="CTA URL"><TextInput value={data.vip.ctaUrl} onChange={(v) => update(['vip','ctaUrl'], v)} /></Field>
           </div>
-          <Field label="Perks">
+          <Field label="Perks (public — shown to everyone)">
             <ListReorder
               items={data.vip.perks || []}
               onMove={(i, d) => { const arr=[...data.vip.perks]; const j=i+d; if(j<0||j>=arr.length) return; [arr[i],arr[j]]=[arr[j],arr[i]]; update(['vip','perks'], arr); }}
               onRemove={(i) => update(['vip','perks'], data.vip.perks.filter((_,x) => x !== i))}
               onAdd={() => update(['vip','perks'], [...(data.vip.perks||[]), { icon: 'Gift', label: 'New perk' }])}
-              addLabel="Add perk"
+              addLabel="Add public perk"
               renderItem={(p, i) => (
                 <div className="grid sm:grid-cols-2 gap-2">
-                  <TextInput value={p.icon} placeholder="Icon (Gift, Star, MessageCircle, Heart, Sparkles)" onChange={(v) => { const a=[...data.vip.perks]; a[i]={...a[i],icon:v}; update(['vip','perks'],a); }} />
+                  <TextInput value={p.icon} placeholder="Icon (Gift, Star, MessageCircle, Heart, Sparkles, Crown)" onChange={(v) => { const a=[...data.vip.perks]; a[i]={...a[i],icon:v}; update(['vip','perks'],a); }} />
                   <TextInput value={p.label} placeholder="Label" onChange={(v) => { const a=[...data.vip.perks]; a[i]={...a[i],label:v}; update(['vip','perks'],a); }} />
                 </div>
               )}
             />
           </Field>
+
+          <div className="pt-4 border-t border-[#e8dfd1]">
+            <p className="text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-1">Members-only content</p>
+            <p className="text-sm text-[#5a4a3d] mb-4">Shown only after a visitor is signed in. Leave any field blank to hide it. Use <code className="bg-[#faf6f0] px-1.5 py-0.5 rounded text-[#6b4f3a]">{'{name}'}</code> in the greeting to auto-insert the member&rsquo;s first name. Wrap text in <code className="bg-[#faf6f0] px-1.5 py-0.5 rounded text-[#6b4f3a]">**double asterisks**</code> to make it bold.</p>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Field label="Members kicker"><TextInput value={data.vip.memberKicker} onChange={(v) => update(['vip','memberKicker'], v)} placeholder="Members Only" /></Field>
+              <Field label="Greeting"><TextInput value={data.vip.memberGreeting} onChange={(v) => update(['vip','memberGreeting'], v)} placeholder="Welcome, {name}." /></Field>
+            </div>
+            <Field label="Intro paragraph"><TextArea value={data.vip.memberIntro} onChange={(v) => update(['vip','memberIntro'], v)} rows={2} /></Field>
+            <Field label="Member perks (shown as a list)">
+              <ListReorder
+                items={data.vip.memberPerks || []}
+                onMove={(i, d) => { const arr=[...(data.vip.memberPerks||[])]; const j=i+d; if(j<0||j>=arr.length) return; [arr[i],arr[j]]=[arr[j],arr[i]]; update(['vip','memberPerks'], arr); }}
+                onRemove={(i) => update(['vip','memberPerks'], (data.vip.memberPerks||[]).filter((_,x) => x !== i))}
+                onAdd={() => update(['vip','memberPerks'], [...(data.vip.memberPerks||[]), { icon: 'Star', title: 'New perk', desc: '' }])}
+                addLabel="Add member perk"
+                renderItem={(mp, i) => (
+                  <div className="space-y-2">
+                    <div className="grid sm:grid-cols-2 gap-2">
+                      <TextInput value={mp.icon} placeholder="Icon (Star, Gift, Heart, MessageCircle, Sparkles, Crown, Gem)" onChange={(v) => { const a=[...(data.vip.memberPerks||[])]; a[i]={...a[i],icon:v}; update(['vip','memberPerks'],a); }} />
+                      <TextInput value={mp.title} placeholder="Title (e.g. Member code)" onChange={(v) => { const a=[...(data.vip.memberPerks||[])]; a[i]={...a[i],title:v}; update(['vip','memberPerks'],a); }} />
+                    </div>
+                    <TextArea value={mp.desc} placeholder="Description (use **bold** if needed)" rows={2} onChange={(v) => { const a=[...(data.vip.memberPerks||[])]; a[i]={...a[i],desc:v}; update(['vip','memberPerks'],a); }} />
+                  </div>
+                )}
+              />
+            </Field>
+          </div>
+
+          <div className="pt-4 border-t border-[#e8dfd1]">
+            <p className="text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-1">Locked prompt (shown to logged-out visitors)</p>
+            <p className="text-sm text-[#5a4a3d] mb-4">Clicking anywhere on this block opens the sign-up modal. Leave the entire block empty to hide it.</p>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Field label="Kicker"><TextInput value={data.vip.lockedKicker} onChange={(v) => update(['vip','lockedKicker'], v)} placeholder="Sign up to unlock" /></Field>
+              <Field label="CTA label"><TextInput value={data.vip.lockedCtaLabel} onChange={(v) => update(['vip','lockedCtaLabel'], v)} placeholder="Join free" /></Field>
+            </div>
+            <Field label="Title"><TextInput value={data.vip.lockedTitle} onChange={(v) => update(['vip','lockedTitle'], v)} placeholder="Exclusive member perks" /></Field>
+            <Field label="Body"><TextArea value={data.vip.lockedText} onChange={(v) => update(['vip','lockedText'], v)} rows={3} /></Field>
+          </div>
         </SectionCard>
         )}
 

@@ -3,13 +3,36 @@ import { Crown, Gift, Star, MessageCircle, Heart, Sparkles, Gem, Lock } from 'lu
 import { useSite } from '../context/SiteContext';
 import { useAuth } from '../context/AuthContext';
 
-const ICONS = { Gift, Star, MessageCircle, Heart, Sparkles, Gem, Crown };
+const ICONS = { Gift, Star, MessageCircle, Heart, Sparkles, Gem, Crown, Lock };
+
+/** Render text with **bold** markdown-lite → <strong>. */
+function renderRich(text) {
+  if (!text) return null;
+  const parts = [];
+  const re = /\*\*(.+?)\*\*/g;
+  let last = 0;
+  let m;
+  let i = 0;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(<span key={i++}>{text.slice(last, m.index)}</span>);
+    parts.push(<strong key={i++} className="text-[#faf6f0]">{m[1]}</strong>);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(<span key={i++}>{text.slice(last)}</span>);
+  return parts;
+}
 
 export default function VIP() {
   const { site } = useSite();
   const { user, openAuthModal } = useAuth();
   const v = site.vip || {};
   const perks = v.perks || [];
+  const memberPerks = v.memberPerks || [];
+
+  const firstName = (user?.fullName || '').split(' ')[0] || 'friend';
+  const greeting = (v.memberGreeting || 'Welcome, {name}.').replace(/\{name\}/g, firstName);
+  const showMemberBlock = memberPerks.length > 0 || v.memberIntro || v.memberGreeting;
+  const showLockedBlock = v.lockedTitle || v.lockedText || v.lockedCtaLabel;
 
   return (
     <section id="members" className="py-24 md:py-32 bg-[#2c2420] text-[#faf6f0] relative overflow-hidden">
@@ -34,23 +57,41 @@ export default function VIP() {
         )}
 
         {/* Member-only content */}
-        <div className="mt-6 max-w-3xl mx-auto">
-          {user ? (
+        {(user && showMemberBlock) ? (
+          <div className="mt-6 max-w-3xl mx-auto">
             <div className="relative bg-[#1a1410] border border-[#c9a876]/40 rounded-3xl p-8 md:p-10 text-left">
-              <div className="flex items-center gap-2 mb-4 text-[#c9a876]">
-                <Sparkles className="w-4 h-4" />
-                <span className="text-xs tracking-[0.3em] uppercase">Members Only</span>
-              </div>
-              <h3 className="font-serif text-2xl md:text-3xl mb-3">Welcome, {(user.fullName || '').split(' ')[0]}.</h3>
-              <p className="text-[#d4c5af] leading-relaxed mb-5">You&rsquo;re officially part of Luca&rsquo;s inner circle. Here&rsquo;s what you unlock as a member:</p>
-              <ul className="space-y-3 text-[#d4c5af]">
-                <li className="flex gap-3"><Star className="w-5 h-5 text-[#c9a876] shrink-0 mt-0.5" /><span><strong className="text-[#faf6f0]">Member code:</strong> <code className="bg-[#c9a876]/15 text-[#c9a876] px-2 py-0.5 rounded">FAMILY10</code> \u2014 10% off your next order.</span></li>
-                <li className="flex gap-3"><Gift className="w-5 h-5 text-[#c9a876] shrink-0 mt-0.5" /><span><strong className="text-[#faf6f0]">Early access</strong> to new drops \u2014 48 hours before public release.</span></li>
-                <li className="flex gap-3"><Heart className="w-5 h-5 text-[#c9a876] shrink-0 mt-0.5" /><span><strong className="text-[#faf6f0]">Free re-stringing</strong> on any Essential Gemstones bracelet, once a year.</span></li>
-                <li className="flex gap-3"><MessageCircle className="w-5 h-5 text-[#c9a876] shrink-0 mt-0.5" /><span>Stories from the studio and behind-the-scenes updates, straight from Luca.</span></li>
-              </ul>
+              {v.memberKicker && (
+                <div className="flex items-center gap-2 mb-4 text-[#c9a876]">
+                  <Sparkles className="w-4 h-4" />
+                  <span className="text-xs tracking-[0.3em] uppercase">{v.memberKicker}</span>
+                </div>
+              )}
+              {v.memberGreeting && (
+                <h3 className="font-serif text-2xl md:text-3xl mb-3">{greeting}</h3>
+              )}
+              {v.memberIntro && (
+                <p className="text-[#d4c5af] leading-relaxed mb-5">{v.memberIntro}</p>
+              )}
+              {memberPerks.length > 0 && (
+                <ul className="space-y-3 text-[#d4c5af]">
+                  {memberPerks.map((mp, i) => {
+                    const Icon = ICONS[mp.icon] || Star;
+                    return (
+                      <li key={i} className="flex gap-3">
+                        <Icon className="w-5 h-5 text-[#c9a876] shrink-0 mt-0.5" />
+                        <span>
+                          {mp.title && <strong className="text-[#faf6f0]">{mp.title}:</strong>}{' '}
+                          {renderRich(mp.desc)}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </div>
-          ) : (
+          </div>
+        ) : (!user && showLockedBlock) ? (
+          <div className="mt-6 max-w-3xl mx-auto">
             <button
               type="button"
               onClick={() => openAuthModal('register')}
@@ -58,19 +99,23 @@ export default function VIP() {
             >
               <div className="pointer-events-none absolute inset-0 backdrop-blur-sm bg-[#1a1410]/30" />
               <div className="relative">
-                <div className="flex items-center gap-2 mb-4 text-[#c9a876]">
-                  <Lock className="w-4 h-4" />
-                  <span className="text-xs tracking-[0.3em] uppercase">Sign up to unlock</span>
-                </div>
-                <h3 className="font-serif text-2xl md:text-3xl mb-3">Exclusive member perks</h3>
-                <p className="text-[#d4c5af] leading-relaxed mb-5">Discount code, early access to new drops, free bracelet re-stringing, and studio stories — free with your Essential Gemstones account.</p>
-                <span className="inline-flex items-center gap-2 px-6 py-3 bg-[#c9a876] text-[#1a1410] rounded-full text-sm tracking-wider uppercase font-medium group-hover:bg-[#d6b885] transition-colors">
-                  Join free
-                </span>
+                {v.lockedKicker && (
+                  <div className="flex items-center gap-2 mb-4 text-[#c9a876]">
+                    <Lock className="w-4 h-4" />
+                    <span className="text-xs tracking-[0.3em] uppercase">{v.lockedKicker}</span>
+                  </div>
+                )}
+                {v.lockedTitle && <h3 className="font-serif text-2xl md:text-3xl mb-3">{v.lockedTitle}</h3>}
+                {v.lockedText && <p className="text-[#d4c5af] leading-relaxed mb-5">{v.lockedText}</p>}
+                {v.lockedCtaLabel && (
+                  <span className="inline-flex items-center gap-2 px-6 py-3 bg-[#c9a876] text-[#1a1410] rounded-full text-sm tracking-wider uppercase font-medium group-hover:bg-[#d6b885] transition-colors">
+                    {v.lockedCtaLabel}
+                  </span>
+                )}
               </div>
             </button>
-          )}
-        </div>
+          </div>
+        ) : null}
 
         {v.ctaLabel && (
           <div className="mt-10">
