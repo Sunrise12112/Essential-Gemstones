@@ -1,15 +1,13 @@
 import React from 'react';
-import { ArrowUpRight, Heart, ShoppingBag } from 'lucide-react';
+import { ArrowUpRight, Heart } from 'lucide-react';
 import { useSite } from '../context/SiteContext';
 import { useAuth } from '../context/AuthContext';
-import { useCart } from '../context/CartContext';
 import { resolveMediaUrl } from '../lib/api';
 import { useToast } from '../hooks/use-toast';
 
 export default function Products() {
   const { site } = useSite();
   const { user, toggleFavorite } = useAuth();
-  const { addItem } = useCart();
   const { toast } = useToast();
   const p = site.products || {};
   const items = p.items || [];
@@ -22,11 +20,6 @@ export default function Products() {
     } else if (res?.favorited) {
       toast({ title: 'Saved to favorites', description: item.name });
     }
-  };
-
-  const onAddToCart = (item) => {
-    addItem(item);
-    toast({ title: 'Added to cart', description: item.name });
   };
 
   return (
@@ -61,18 +54,13 @@ export default function Products() {
                 <div className="p-7 md:p-9">
                   <h3 className="font-serif text-2xl md:text-3xl text-[#1a1410] mb-3">{it.name}</h3>
                   {it.description && <p className="text-[#5a4a3d] mb-6 leading-relaxed">{it.description}</p>}
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex items-center justify-between">
                     {it.price && <span className="font-serif text-xl text-[#6b4f3a]">{it.price}</span>}
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => onAddToCart(it)} className="inline-flex items-center gap-2 px-4 py-3 border border-[#3d3128] text-[#3d3128] rounded-full text-sm hover:bg-[#3d3128] hover:text-[#faf6f0] transition-colors">
-                        <ShoppingBag className="w-4 h-4" /> Add to cart
-                      </button>
-                      {it.buyUrl && (
-                        <a href={it.buyUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 px-4 py-3 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm hover:bg-[#6b4f3a] transition-colors">
-                          Buy Now <ArrowUpRight className="w-4 h-4" />
-                        </a>
-                      )}
-                    </div>
+                    {it.buyUrl && (
+                      <a href={it.buyUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 px-5 py-3 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm hover:bg-[#6b4f3a] transition-colors">
+                        Buy Now <ArrowUpRight className="w-4 h-4" />
+                      </a>
+                    )}
                   </div>
                 </div>
               </article>

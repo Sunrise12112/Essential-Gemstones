@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Sparkles, X, Send, Loader2, ClipboardCheck, Wand2, Undo2, PenLine } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Sparkles, X, Send, Loader2, ClipboardCheck, Wand2, Undo2, PenLine, History, Plus, Trash2, Pencil, Check } from 'lucide-react';
 import api, { API } from '../../lib/api';
 import { useToast } from '../../hooks/use-toast';
 import { useSite } from '../../context/SiteContext';
+import { chatAuthHeaders } from '../../lib/chatIdentity';
 
 export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
   const [tab, setTab] = useState('write'); // 'write' | 'edit'
@@ -12,17 +13,50 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
   const [busy, setBusy] = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const [copied, setCopied] = useState(-1);
+  const [showHistory, setShowHistory] = useState(false);
+  const [sessions, setSessions] = useState([]);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
   const bodyRef = useRef(null);
   const { toast } = useToast();
   const { refresh } = useSite();
+
+  const loadSessions = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/chat/sessions?mode=admin-writer`, { headers: chatAuthHeaders() });
+      if (res.ok) setSessions(await res.json());
+    } catch (e) { /* ignore */ }
+  }, []);
+
+  const loadSession = async (id) => {
+    setShowHistory(false);
+    try {
+      const res = await fetch(`${API}/chat/session/${id}`, { headers: chatAuthHeaders() });
+      if (!res.ok) throw new Error('Chat not found');
+      const data = await res.json();
+      setSessionId(data.id);
+      setMessages((data.messages || []).map((m) => ({ role: m.role, kind: 'text', content: m.content })));
+    } catch (e) {
+      toast({ title: 'Could not open chat', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const newChat = () => {
+    setSessionId(null);
+    setMessages([]);
+    setShowHistory(false);
+  };
+
+  const currentSession = sessions.find((s) => s.id === sessionId);
 
   useEffect(() => {
     if (open) {
       setMessages([]);
       setSessionId(null);
       setInput(hint || '');
+      loadSessions();
     }
-  }, [open, hint]);
+  }, [open, hint, loadSessions]);
 
   useEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -35,10 +69,9 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
     setStreaming(true);
     setMessages((s) => [...s, { role: 'user', content: text }, { role: 'assistant', kind: 'text', content: '' }]);
     try {
-      const token = localStorage.getItem('eg_admin_token');
       const res = await fetch(`${API}/chat/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
+        headers: { 'Content-Type': 'application/json', ...chatAuthHeaders() },
         body: JSON.stringify({ mode: 'admin-writer', sessionId, message: text }),
       });
       if (!res.ok || !res.body) {
@@ -80,6 +113,7 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
       toast({ title: 'AI unavailable', description: e.message || 'Try again', variant: 'destructive' });
     } finally {
       setStreaming(false);
+      loadSessions();
     }
   };
 
@@ -149,6 +183,36 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
     onClose();
   };
 
+  const deleteSession = async (id, e) => {
+    e?.stopPropagation?.();
+    if (!window.confirm('Delete this chat forever?')) return;
+    try {
+      await fetch(`${API}/chat/session/${id}`, { method: 'DELETE', headers: chatAuthHeaders() });
+      if (sessionId === id) newChat();
+      loadSessions();
+    } catch (err) { /* ignore */ }
+  };
+
+  const startRename = () => {
+    if (!currentSession) return;
+    setTitleDraft(currentSession.title || '');
+    setEditingTitle(true);
+  };
+
+  const saveRename = async () => {
+    if (!sessionId) { setEditingTitle(false); return; }
+    const t = titleDraft.trim();
+    if (!t) { setEditingTitle(false); return; }
+    try {
+      await fetch(`${API}/chat/session/${sessionId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json', ...chatAuthHeaders() },
+        body: JSON.stringify({ title: t }),
+      });
+      loadSessions();
+      setEditingTitle(false);
+    } catch (err) { /* ignore */ }
+  };
+
   const submit = () => (tab === 'write' ? sendWrite() : sendEdit());
 
   if (!open) return null;
@@ -158,25 +222,67 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
       <div onClick={onClose} className="absolute inset-0" />
       <div className="relative w-full max-w-2xl bg-[#faf6f0] rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
         <div className="bg-[#1a1410] text-[#faf6f0] px-6 pt-4 pb-3 shrink-0">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-[#c9a876]" />
-              <span className="font-serif text-lg">AI Assistant</span>
-              <span className="text-[10px] tracking-[0.2em] uppercase bg-[#c9a876]/20 text-[#c9a876] px-2 py-0.5 rounded">Claude</span>
+          <div className="flex items-center justify-between mb-3 gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <Sparkles className="w-4 h-4 text-[#c9a876] shrink-0" />
+              {editingTitle && sessionId && tab === 'write' ? (
+                <div className="flex items-center gap-1 flex-1">
+                  <input value={titleDraft} onChange={(e) => setTitleDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveRename(); if (e.key === 'Escape') setEditingTitle(false); }} autoFocus className="flex-1 px-2 py-1 bg-[#241b15] text-[#faf6f0] rounded text-sm outline-none border border-[#3d2f24]" />
+                  <button onClick={saveRename} className="text-[#c9a876] hover:text-[#faf6f0]" aria-label="Save"><Check className="w-3.5 h-3.5" /></button>
+                </div>
+              ) : (
+                <>
+                  <span className="font-serif text-lg truncate">{tab === 'write' && sessionId ? (currentSession?.title || 'Chat') : 'AI Assistant'}</span>
+                  <span className="text-[10px] tracking-[0.2em] uppercase bg-[#c9a876]/20 text-[#c9a876] px-2 py-0.5 rounded shrink-0">Claude</span>
+                  {tab === 'write' && sessionId && <button onClick={startRename} className="text-[#8b6b4f] hover:text-[#c9a876] shrink-0" aria-label="Rename"><Pencil className="w-3 h-3" /></button>}
+                </>
+              )}
             </div>
-            <button onClick={onClose} aria-label="Close" className="w-9 h-9 rounded-full hover:bg-[#241b15] flex items-center justify-center"><X className="w-4 h-4" /></button>
+            <div className="flex items-center gap-1 shrink-0">
+              {tab === 'write' && (
+                <>
+                  <button onClick={() => setShowHistory(!showHistory)} title="History" aria-label="History" className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${showHistory ? 'bg-[#c9a876] text-[#1a1410]' : 'hover:bg-[#241b15]'}`}><History className="w-4 h-4" /></button>
+                  <button onClick={newChat} title="New chat" aria-label="New chat" className="w-8 h-8 rounded-full hover:bg-[#241b15] flex items-center justify-center"><Plus className="w-4 h-4" /></button>
+                </>
+              )}
+              <button onClick={onClose} aria-label="Close" className="w-9 h-9 rounded-full hover:bg-[#241b15] flex items-center justify-center"><X className="w-4 h-4" /></button>
+            </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setTab('write')} className={`text-xs px-3 py-1.5 rounded-full inline-flex items-center gap-1.5 transition-colors ${tab === 'write' ? 'bg-[#c9a876] text-[#1a1410]' : 'border border-[#3d2f24] text-[#d4c5af] hover:border-[#c9a876]/50'}`}>
+            <button onClick={() => { setTab('write'); setShowHistory(false); }} className={`text-xs px-3 py-1.5 rounded-full inline-flex items-center gap-1.5 transition-colors ${tab === 'write' ? 'bg-[#c9a876] text-[#1a1410]' : 'border border-[#3d2f24] text-[#d4c5af] hover:border-[#c9a876]/50'}`}>
               <PenLine className="w-3 h-3" /> Write draft
             </button>
-            <button onClick={() => setTab('edit')} className={`text-xs px-3 py-1.5 rounded-full inline-flex items-center gap-1.5 transition-colors ${tab === 'edit' ? 'bg-[#c9a876] text-[#1a1410]' : 'border border-[#3d2f24] text-[#d4c5af] hover:border-[#c9a876]/50'}`}>
+            <button onClick={() => { setTab('edit'); setShowHistory(false); }} className={`text-xs px-3 py-1.5 rounded-full inline-flex items-center gap-1.5 transition-colors ${tab === 'edit' ? 'bg-[#c9a876] text-[#1a1410]' : 'border border-[#3d2f24] text-[#d4c5af] hover:border-[#c9a876]/50'}`}>
               <Wand2 className="w-3 h-3" /> Edit site
             </button>
           </div>
         </div>
 
-        <div ref={bodyRef} className="flex-1 overflow-y-auto p-5 space-y-3 bg-[#faf6f0]">
+        <div ref={bodyRef} className="flex-1 overflow-y-auto p-5 space-y-3 bg-[#faf6f0] relative">
+          {showHistory && tab === 'write' && (
+            <div className="absolute inset-0 bg-[#faf6f0] z-10 overflow-y-auto">
+              <div className="p-3 border-b border-[#e8dfd1] flex items-center justify-between">
+                <p className="text-xs tracking-[0.2em] uppercase text-[#8b6b4f]">Your chats</p>
+                <button onClick={newChat} className="text-xs px-3 py-1 rounded-full bg-[#1a1410] text-[#faf6f0] inline-flex items-center gap-1"><Plus className="w-3 h-3" /> New</button>
+              </div>
+              {sessions.length === 0 ? (
+                <p className="text-center text-sm text-[#8b6b4f] italic p-8">No saved chats yet.</p>
+              ) : (
+                <div className="divide-y divide-[#e8dfd1]">
+                  {sessions.map((s) => (
+                    <button key={s.id} onClick={() => loadSession(s.id)} className={`w-full text-left px-4 py-3 flex items-start justify-between gap-3 group hover:bg-white ${s.id === sessionId ? 'bg-white' : ''}`}>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-[#1a1410] truncate font-medium">{s.title || 'New chat'}</p>
+                        <p className="text-xs text-[#8b6b4f] truncate">{s.lastMessagePreview}</p>
+                        <p className="text-[10px] text-[#8b6b4f] mt-0.5">{s.updatedAt ? new Date(s.updatedAt).toLocaleString() : ''}</p>
+                      </div>
+                      <button onClick={(e) => deleteSession(s.id, e)} className="text-[#8b6b4f] hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {messages.length === 0 && (
             <div className="text-sm text-[#5a4a3d] py-6">
               {tab === 'write' ? (

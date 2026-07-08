@@ -957,6 +957,36 @@ class ChatMessageIn(BaseModel):
     message: str
 
 
+def _principal_key(request: Request) -> str:
+    """Return a stable user identifier for chat memory.
+
+    Priority: admin JWT sub > user JWT sub > X-Client-Id header > generated.
+    """
+    auth = request.headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        try:
+            claims = jwt.decode(auth.split(" ", 1)[1], JWT_SECRET, algorithms=[JWT_ALG])
+            role = claims.get("role")
+            sub = claims.get("sub")
+            if sub:
+                if role == "user":
+                    return f"user:{sub}"
+                return f"admin:{sub}"
+        except jwt.PyJWTError:
+            pass
+    client_id = (request.headers.get("X-Client-Id") or "").strip()
+    if client_id:
+        return f"anon:{client_id[:80]}"
+    return f"anon:{uuid.uuid4()}"
+
+
+def _fallback_title_from(text: str) -> str:
+    t = (text or "").strip().replace("\n", " ")
+    if len(t) > 60:
+        t = t[:57] + "\u2026"
+    return t or "New chat"
+
+
 def _sanitize_text(s: Any, limit: int = 800) -> str:
     if not s:
         return ""
@@ -1106,6 +1136,7 @@ async def chat_stream(payload: ChatMessageIn, request: Request) -> StreamingResp
 
     session_id = payload.sessionId or str(uuid.uuid4())
     now_iso = datetime.utcnow().isoformat()
+    user_key = _principal_key(request)
 
     # Load or create session doc
     session_doc = await db.chat_sessions.find_one({"_id": session_id})
@@ -1114,14 +1145,24 @@ async def chat_stream(payload: ChatMessageIn, request: Request) -> StreamingResp
             "_id": session_id,
             "mode": mode,
             "userId": user_id,
+            "userKey": user_key,
+            "title": _fallback_title_from(text),
             "createdAt": now_iso,
             "updatedAt": now_iso,
             "messages": [],
             "meta": {},
         }
         await db.chat_sessions.insert_one(session_doc)
-    elif session_doc.get("mode") != mode:
-        raise HTTPException(status_code=400, detail="Session mode mismatch")
+    else:
+        # Enforce ownership: only the same principal (or unowned legacy) may continue a session
+        owner = session_doc.get("userKey")
+        if owner and owner != user_key:
+            raise HTTPException(status_code=403, detail="This chat belongs to another account")
+        if session_doc.get("mode") != mode:
+            raise HTTPException(status_code=400, detail="Session mode mismatch")
+        # Backfill title / userKey for legacy sessions
+        if not session_doc.get("title"):
+            await db.chat_sessions.update_one({"_id": session_id}, {"$set": {"title": _fallback_title_from(text), "userKey": user_key}})
 
     # Reconstruct chat with prior history
     system_prompt = await _system_prompt_for(mode)
@@ -1190,16 +1231,80 @@ async def chat_stream(payload: ChatMessageIn, request: Request) -> StreamingResp
 
 
 @app.get("/api/chat/session/{session_id}")
-async def get_chat_session(session_id: str) -> dict:
+async def get_chat_session(session_id: str, request: Request) -> dict:
     doc = await db.chat_sessions.find_one({"_id": session_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Session not found")
+    user_key = _principal_key(request)
+    owner = doc.get("userKey")
+    if owner and owner != user_key:
+        raise HTTPException(status_code=403, detail="Not your chat")
     return {
         "id": doc["_id"],
         "mode": doc.get("mode"),
+        "title": doc.get("title") or "",
         "messages": doc.get("messages") or [],
         "createdAt": doc.get("createdAt"),
+        "updatedAt": doc.get("updatedAt"),
     }
+
+
+@app.get("/api/chat/sessions")
+async def list_my_chat_sessions(request: Request, mode: Optional[str] = None, limit: int = 100) -> list[dict]:
+    user_key = _principal_key(request)
+    query: dict[str, Any] = {"userKey": user_key}
+    if mode:
+        query["mode"] = mode
+    cursor = db.chat_sessions.find(query).sort("updatedAt", -1).limit(max(1, min(limit, 500)))
+    out: list[dict] = []
+    async for doc in cursor:
+        msgs = doc.get("messages") or []
+        last = msgs[-1] if msgs else None
+        out.append({
+            "id": doc["_id"],
+            "mode": doc.get("mode"),
+            "title": doc.get("title") or (msgs[0].get("content", "New chat")[:60] if msgs else "New chat"),
+            "createdAt": doc.get("createdAt"),
+            "updatedAt": doc.get("updatedAt"),
+            "messageCount": len(msgs),
+            "lastMessagePreview": ((last.get("content") or "")[:140] if last else ""),
+        })
+    return out
+
+
+class SessionRenameIn(BaseModel):
+    title: str
+
+
+@app.put("/api/chat/session/{session_id}")
+async def rename_chat_session(session_id: str, payload: SessionRenameIn, request: Request) -> dict:
+    doc = await db.chat_sessions.find_one({"_id": session_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Session not found")
+    user_key = _principal_key(request)
+    owner = doc.get("userKey")
+    if owner and owner != user_key:
+        raise HTTPException(status_code=403, detail="Not your chat")
+    title = (payload.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+    if len(title) > 200:
+        title = title[:200]
+    await db.chat_sessions.update_one({"_id": session_id}, {"$set": {"title": title}})
+    return {"ok": True, "title": title}
+
+
+@app.delete("/api/chat/session/{session_id}")
+async def delete_my_chat_session(session_id: str, request: Request) -> dict:
+    doc = await db.chat_sessions.find_one({"_id": session_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Session not found")
+    user_key = _principal_key(request)
+    owner = doc.get("userKey")
+    if owner and owner != user_key:
+        raise HTTPException(status_code=403, detail="Not your chat")
+    await db.chat_sessions.delete_one({"_id": session_id})
+    return {"ok": True}
 
 
 @app.get("/api/admin/chat-sessions")
