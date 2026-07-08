@@ -14,6 +14,7 @@ import FAQ from '../components/FAQ';
 import Gallery from '../components/Gallery';
 import VIP from '../components/VIP';
 import Footer from '../components/Footer';
+import ChatBubble from '../components/chat/ChatBubble';
 
 const REGISTRY = {
   hero: Hero,
@@ -44,6 +45,7 @@ export default function Home() {
         return <C key={key} />;
       })}
       <Footer />
+      <ChatBubble />
     </div>
   );
 }

@@ -21,6 +21,7 @@ from fastapi import (
     FastAPI,
     File,
     HTTPException,
+    Request,
     UploadFile,
     status,
 )
@@ -933,3 +934,262 @@ logger = logging.getLogger(__name__)
 @app.on_event("shutdown")
 async def shutdown_db_client() -> None:
     client.close()
+
+
+# ---------------- GEMINI CHAT ---------------- #
+
+from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+from fastapi.responses import StreamingResponse
+
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+GEMINI_MODEL = "gemini-2.5-flash"
+
+CHAT_MODES = {"ask-luca", "stone-guide", "admin-writer"}
+
+
+class ChatMessageIn(BaseModel):
+    mode: str
+    sessionId: Optional[str] = None
+    message: str
+
+
+def _sanitize_text(s: Any, limit: int = 800) -> str:
+    if not s:
+        return ""
+    text = str(s).strip()
+    if len(text) > limit:
+        text = text[:limit] + "\u2026"
+    return text
+
+
+async def _build_context_snippets() -> dict[str, str]:
+    site = await get_site_doc()
+    products = site.get("products", {}).get("items") or []
+    faq = site.get("faq", {}).get("items") or []
+    stones = site.get("chakra", {}).get("stones") or []
+    lava = site.get("lavaMeaning", {}).get("items") or []
+    founder = site.get("founder", {})
+    craft = site.get("craft", {}).get("steps") or []
+    footer = site.get("footer", {})
+
+    products_txt = "\n".join(
+        f"- {p.get('name')} ({p.get('price')}): {_sanitize_text(p.get('description'), 240)}"
+        for p in products
+    ) or "(no products listed)"
+
+    faq_txt = "\n".join(
+        f"Q: {f.get('q')}\nA: {_sanitize_text(f.get('a'), 400)}"
+        for f in faq
+    ) or ""
+
+    stones_txt = "\n".join(
+        f"- {s.get('stone')} \u2014 {s.get('chakra')}: {_sanitize_text(s.get('desc'), 240)}"
+        for s in stones
+    ) or ""
+
+    lava_txt = "\n".join(
+        f"- {m.get('title')}: {_sanitize_text(m.get('desc'), 260)}" for m in lava
+    ) or ""
+
+    craft_txt = "\n".join(
+        f"- {c.get('title')}: {_sanitize_text(c.get('desc'), 240)}" for c in craft
+    ) or ""
+
+    founder_intro = _sanitize_text(founder.get("intro"), 500)
+    contact_email = footer.get("contactEmail") or footer.get("email") or ""
+
+    return {
+        "products": products_txt,
+        "faq": faq_txt,
+        "stones": stones_txt,
+        "lava": lava_txt,
+        "craft": craft_txt,
+        "founder_intro": founder_intro,
+        "contact_email": contact_email,
+    }
+
+
+async def _system_prompt_for(mode: str) -> str:
+    ctx = await _build_context_snippets()
+    if mode == "ask-luca":
+        return f"""You are the friendly, warm assistant on Essential Gemstones, a handmade lava-stone bracelet brand founded by Luca. You speak on behalf of the brand in first person plural ("we"). Keep replies short (2\u20135 sentences), sincere, and helpful. If the visitor asks about something you truly don't know, offer to connect them with Luca at {ctx['contact_email'] or 'our contact email'}. Never invent product names, prices, or policies not in the reference below.
+
+REFERENCE (only source of truth):
+
+Products:
+{ctx['products']}
+
+FAQ:
+{ctx['faq']}
+
+About the founder:
+{ctx['founder_intro']}
+
+Craftsmanship steps:
+{ctx['craft']}
+"""
+    if mode == "stone-guide":
+        return f"""You are a gentle, mystical chakra & gemstone guide for Essential Gemstones. Your job is to help the visitor find the right stone or intention. Ask 1\u20132 short warm questions to understand what they need (grounding, protection, focus, love, healing, courage, clarity), then recommend one or two of the stones from the reference. Recommend the "7 Chakra Lava Stone Bracelet" if multiple stones fit. Keep it short and poetic; never invent a stone that isn't listed.
+
+Available stones on our chakra bracelet:
+{ctx['stones']}
+
+What lava stone means to us:
+{ctx['lava']}
+"""
+    if mode == "admin-writer":
+        return """You are a creative writing assistant helping Luca (a young founder) write copy for the Essential Gemstones website. Voice: warm, earthy, sincere, poetic-but-plain. Avoid corporate speak, avoid exclamation-heavy hype, avoid emojis. When the user gives you a brief, respond with only the requested copy \u2014 no prefaces, no explanations \u2014 unless they ask otherwise."""
+    return "You are a helpful assistant."
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(payload: ChatMessageIn, request: Request) -> StreamingResponse:
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=503, detail="Chat is not configured")
+    mode = (payload.mode or "").strip()
+    if mode not in CHAT_MODES:
+        raise HTTPException(status_code=400, detail="Unknown chat mode")
+
+    # admin-writer requires an admin token
+    user_id: Optional[str] = None
+    if mode == "admin-writer":
+        auth = request.headers.get("Authorization") or ""
+        if not auth.lower().startswith("bearer "):
+            raise HTTPException(status_code=401, detail="Admin auth required")
+        try:
+            token = auth.split(" ", 1)[1]
+            claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        except jwt.PyJWTError:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        if claims.get("role") == "user":
+            raise HTTPException(status_code=403, detail="Admins only")
+        user_id = f"admin:{claims.get('sub')}"
+
+    text = (payload.message or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty message")
+    if len(text) > 4000:
+        raise HTTPException(status_code=400, detail="Message too long")
+
+    session_id = payload.sessionId or str(uuid.uuid4())
+    now_iso = datetime.utcnow().isoformat()
+
+    # Load or create session doc
+    session_doc = await db.chat_sessions.find_one({"_id": session_id})
+    if session_doc is None:
+        session_doc = {
+            "_id": session_id,
+            "mode": mode,
+            "userId": user_id,
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+            "messages": [],
+            "meta": {},
+        }
+        await db.chat_sessions.insert_one(session_doc)
+    elif session_doc.get("mode") != mode:
+        raise HTTPException(status_code=400, detail="Session mode mismatch")
+
+    # Reconstruct chat with prior history
+    system_prompt = await _system_prompt_for(mode)
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=session_id,
+        system_message=system_prompt,
+    ).with_model("gemini", GEMINI_MODEL)
+
+    # Replay prior turns so Gemini has full context (llm history is per-instance)
+    prior = session_doc.get("messages") or []
+
+    async def event_generator():
+        # Warm up prior history via non-streaming send (we won't yield these)
+        try:
+            for m in prior:
+                if m.get("role") == "user":
+                    async for _ev in chat.stream_message(UserMessage(text=m.get("content", ""))):
+                        if isinstance(_ev, StreamDone):
+                            break
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("chat history replay failed: %s", exc)
+
+        # Yield session id first
+        yield f"event: session\ndata: {session_id}\n\n"
+
+        full_reply = ""
+        try:
+            async for ev in chat.stream_message(UserMessage(text=text)):
+                if isinstance(ev, TextDelta):
+                    chunk = ev.content or ""
+                    full_reply += chunk
+                    # SSE data lines cannot contain literal newlines; escape them
+                    escaped = chunk.replace("\r", "").replace("\n", "\\n")
+                    yield f"data: {escaped}\n\n"
+                elif isinstance(ev, StreamDone):
+                    break
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("chat stream failed: %s", exc)
+            yield f"event: error\ndata: {str(exc)[:200]}\n\n"
+
+        # Persist to db (best effort)
+        try:
+            new_messages = prior + [
+                {"role": "user", "content": text, "at": now_iso},
+                {"role": "assistant", "content": full_reply, "at": datetime.utcnow().isoformat()},
+            ]
+            await db.chat_sessions.update_one(
+                {"_id": session_id},
+                {"$set": {"messages": new_messages, "updatedAt": datetime.utcnow().isoformat()}},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("chat persist failed: %s", exc)
+
+        yield "event: done\ndata: end\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/chat/session/{session_id}")
+async def get_chat_session(session_id: str) -> dict:
+    doc = await db.chat_sessions.find_one({"_id": session_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "id": doc["_id"],
+        "mode": doc.get("mode"),
+        "messages": doc.get("messages") or [],
+        "createdAt": doc.get("createdAt"),
+    }
+
+
+@app.get("/api/admin/chat-sessions")
+async def admin_list_chat_sessions(admin: dict = Depends(require_admin), limit: int = 100) -> list[dict]:
+    cursor = db.chat_sessions.find().sort("updatedAt", -1).limit(max(1, min(limit, 500)))
+    out: list[dict] = []
+    async for doc in cursor:
+        msgs = doc.get("messages") or []
+        out.append({
+            "id": doc["_id"],
+            "mode": doc.get("mode"),
+            "createdAt": doc.get("createdAt"),
+            "updatedAt": doc.get("updatedAt"),
+            "userId": doc.get("userId"),
+            "messageCount": len(msgs),
+            "lastMessage": (msgs[-1].get("content")[:180] if msgs else ""),
+        })
+    return out
+
+
+@app.delete("/api/admin/chat-sessions/{session_id}")
+async def admin_delete_chat_session(session_id: str, admin: dict = Depends(require_admin)) -> dict:
+    res = await db.chat_sessions.delete_one({"_id": session_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}

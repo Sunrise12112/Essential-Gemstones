@@ -539,6 +539,67 @@ backend:
         agent: "testing"
         comment: "JWT role separation fully functional. All 4 test cases passed: (1) User tokens have role='user' claim in JWT payload. (2) Admin tokens have isSuper=true and role='admin' claims. (3) User tokens cannot access /api/admin/* endpoints - returns 401 'Not an admin token'. (4) Admin tokens cannot access /api/auth/me - returns 401 'User token required'. Token-based access control working correctly, preventing cross-role access."
 
+
+  - task: "Gemini chat SSE streaming - ask-luca mode"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/chat/stream with mode='ask-luca' fully functional. All 6 test cases passed: (1) First message returns 200 with text/event-stream content-type, emits 'event: session' with UUID, streams text chunks via 'data:' lines, and terminates with 'event: done'. Reply mentions lava stone care (cleaning, avoiding water/chemicals). (2) Follow-up message with same sessionId maintains context - reply discusses essential oils and porous lava stone. (3) GET /api/chat/session/{sessionId} returns conversation history with mode='ask-luca' and 4 messages (2 user + 2 assistant). (4) Empty message returns 400 'Empty message'. (5) Unknown mode returns 400 'Unknown chat mode'. (6) Message >4000 chars returns 400 'Message too long'. SSE streaming working correctly with emergentintegrations library and Gemini gemini-2.5-flash model."
+
+  - task: "Gemini chat SSE streaming - stone-guide mode"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/chat/stream with mode='stone-guide' fully functional. All 2 test cases passed: (1) Message about feeling grounded returns 200 SSE stream with session ID and streamed reply. Reply mentions Red Jasper or 7 Chakra Lava Stone Bracelet for grounding, demonstrating contextual stone recommendations. (2) Cross-mode session reuse guard working - attempting to use ask-luca session ID with stone-guide mode returns 400 'Session mode mismatch'. Stone recommendation logic working correctly."
+
+  - task: "Gemini chat SSE streaming - admin-writer mode"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/chat/stream with mode='admin-writer' fully functional. All 4 test cases passed: (1) Without Authorization header returns 401 'Admin auth required'. (2) Master admin login successful (password '1121211221'). (3) With admin Bearer token returns 200 SSE stream with creative copy content (tested with 'Write a 1-sentence description for a lava-stone bracelet with amethyst'). (4) With user token returns 403 'Admins only'. Admin authentication and authorization working correctly for admin-writer mode."
+
+  - task: "Gemini chat session management"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Chat session management endpoints fully functional. All 4 test cases passed: (1) GET /api/admin/chat-sessions with admin token returns 200 with array of sessions. Each session has correct structure: id, mode, createdAt, updatedAt, userId, messageCount, lastMessage. Test sessions (ask-luca and stone-guide) found in list. (2) GET /api/admin/chat-sessions without token returns 401. (3) DELETE /api/admin/chat-sessions/{id} with admin token returns 200 {ok: true}. Verified session actually deleted - subsequent GET /api/chat/session/{id} returns 404. (4) DELETE non-existent session returns 404. Session persistence to MongoDB working correctly."
+
+  - task: "Gemini chat Request import fix"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "MINOR FIX APPLIED: Added missing 'Request' import to FastAPI imports (line 19-26). The chat_stream endpoint signature requires Request object to access headers for admin-writer authentication. Without this import, FastAPI was treating 'request' as a query parameter causing 422 validation errors. After adding import, all chat endpoints working correctly. This was a simple missing import, not a logic issue."
+
 frontend:
   - task: "Frontend integration"
     implemented: false
@@ -566,20 +627,23 @@ frontend:
 
 metadata:
   created_by: "testing_agent"
-  version: "1.4"
-  test_sequence: 5
+  version: "1.5"
+  test_sequence: 6
   run_ui: false
   backend_url: "https://gemstone-makeover.preview.emergentagent.com"
   test_date: "2026-07-01"
 
 test_plan:
   current_focus:
-    - "User authentication endpoints"
+    - "Gemini chat endpoints"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "testing"
+    message: "GEMINI CHAT ENDPOINTS TESTING COMPLETE: All 16 comprehensive test cases passed (16/16) across 4 scenarios (A-D). Tested all three Gemini chat modes with SSE streaming: (A) ask-luca mode (public, no auth) - 6/6 passed: SSE streaming with session ID, text chunks, and done event working correctly. Context maintained across messages. Validation working (empty message, unknown mode, message too long). (B) stone-guide mode (public, no auth) - 2/2 passed: Stone recommendations working (mentions Red Jasper/7 Chakra bracelet for grounding). Cross-mode session reuse prevention working. (C) admin-writer mode (admin auth required) - 4/4 passed: Auth enforcement working (401 without token, 403 with user token). Admin token access working, returns creative copy. (D) Admin session management - 4/4 passed: GET /admin/chat-sessions returns correct session list. DELETE working with actual deletion verified. MINOR FIX APPLIED: Added missing 'Request' import to FastAPI imports - was causing 422 validation errors. After fix, all endpoints working perfectly. CRITICAL FINDINGS: (1) SSE streaming working correctly with emergentintegrations library and Gemini gemini-2.5-flash model. (2) All three chat modes operational with correct system prompts and context. (3) Session persistence to MongoDB working. (4) Authentication/authorization correctly enforced. (5) Conversation history maintained across messages. NO MAJOR ISSUES FOUND. All Gemini chat features are production-ready."
+
   - agent: "testing"
     message: "Completed comprehensive backend testing of Essential Gemstones CMS. All 11 test scenarios passed successfully. Backend is fully functional with proper authentication, authorization, data persistence, file upload/serving, and validation. No critical or major issues found. Backend logs show clean execution with no errors. Ready for production use."
   - agent: "testing"
