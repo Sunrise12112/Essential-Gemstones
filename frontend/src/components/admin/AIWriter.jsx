@@ -88,7 +88,7 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
     } catch (e) { /* ignore */ }
   };
 
-  const useThis = (text) => {
+  const applyInsertion = (text) => {
     if (onInsert) onInsert(text);
     toast({ title: 'Inserted', description: 'AI draft placed into the field.' });
     onClose();
@@ -127,7 +127,7 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
                 {m.role === 'assistant' && m.content && !streaming && (
                   <div className="mt-3 pt-3 border-t border-[#e8dfd1] flex flex-wrap gap-2">
                     {onInsert && (
-                      <button onClick={() => useThis(m.content)} className="text-xs px-3 py-1.5 rounded-full bg-[#c9a876] text-[#1a1410] hover:bg-[#d6b885] font-medium">Use this</button>
+                      <button onClick={() => applyInsertion(m.content)} className="text-xs px-3 py-1.5 rounded-full bg-[#c9a876] text-[#1a1410] hover:bg-[#d6b885] font-medium">Use this</button>
                     )}
                     <button onClick={() => copyToClipboard(m.content, i)} className="text-xs px-3 py-1.5 rounded-full border border-[#e8dfd1] text-[#3d3128] hover:bg-[#faf6f0] inline-flex items-center gap-1">
                       {copied === i ? <><ClipboardCheck className="w-3 h-3" /> Copied</> : 'Copy'}
