@@ -600,6 +600,19 @@ backend:
         agent: "testing"
         comment: "MINOR FIX APPLIED: Added missing 'Request' import to FastAPI imports (line 19-26). The chat_stream endpoint signature requires Request object to access headers for admin-writer authentication. Without this import, FastAPI was treating 'request' as a query parameter causing 422 validation errors. After adding import, all chat endpoints working correctly. This was a simple missing import, not a logic issue."
 
+
+  - task: "Gemini chat prompt fixes - Pronoun correctness and age descriptor removal"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ GEMINI CHAT PROMPT FIXES VERIFIED: All 5 comprehensive test cases passed (10/10 runs - each test run twice for LLM non-determinism). Tested pronoun correctness and age descriptor removal across all three chat modes. TEST RESULTS: (Test 1) Pronoun correctness in ask-luca mode - PASSED both runs: Luca correctly referred to with he/him/his pronouns, zero uses of she/her/they. (Test 2) No age qualifiers in ask-luca mode - PASSED both runs: Zero uses of 'nine-year-old', 'young founder', 'kid founder', 'young boy', etc. Luca referred to as 'our founder' or 'Luca'. (Test 3) Age question handling in ask-luca mode - PASSED both runs: Direct age questions correctly answered (mentions 'nine years old' when explicitly asked), still uses correct pronouns. (Test 4) Pronouns in stone-guide mode - PASSED both runs: Correct he/him/his pronouns, no forbidden pronouns, no age descriptors. (Test 5) Admin-writer mode with admin auth - PASSED both runs: Correct pronouns, no age descriptors, admin authentication working. CRITICAL FINDINGS: (1) System prompts correctly enforce 'Luca is a boy. ALWAYS use he/him/his. NEVER use she/her/they.' (2) Age-forward descriptors successfully removed - no mentions of 'nine-year-old entrepreneur', 'young founder', 'kid founder', etc. unless visitor explicitly asks about age. (3) Voice rules applied to all three modes (ask-luca, stone-guide, admin-writer). (4) SSE streaming format verified: correct 'event: session', streamed 'data:' chunks, terminal 'event: done'. (5) All replies meaningful (>30 chars). NO ISSUES FOUND. Prompt fixes are production-ready and working correctly across all chat modes."
+
 frontend:
   - task: "Frontend integration"
     implemented: false
@@ -627,15 +640,15 @@ frontend:
 
 metadata:
   created_by: "testing_agent"
-  version: "1.5"
-  test_sequence: 6
+  version: "1.6"
+  test_sequence: 7
   run_ui: false
   backend_url: "https://gemstone-makeover.preview.emergentagent.com"
   test_date: "2026-07-01"
 
 test_plan:
   current_focus:
-    - "Gemini chat endpoints"
+    - "Gemini chat prompt fixes"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -659,4 +672,8 @@ agent_communication:
     message: "USER AUTHENTICATION ENDPOINTS TESTING COMPLETE: All 44 comprehensive test cases passed (44/44) across 10 scenarios (A-J). Tested all new user account/authentication features: (A) User registration - valid registration, duplicate email detection, password/name validation, malformed email handling, newsletter subscription integration (6/6 passed). (B) User login - valid login, wrong password, unknown email (3/3 passed). (C) /auth/me endpoint - works with user token, rejects without token, rejects admin token with 'User token required' (3/3 passed). (D) Update profile - fullName update, password update with login verification, validation (3/3 passed). (E) Favorites toggle - add/remove favorites, persistence verification, authentication required (5/5 passed). (F) Admin user management - list users with permission enforcement, create viewer admin, grant manage_users permission, ban user (5/5 passed). (G) Banned user flow - login blocked, old token blocked, unban works, login after unban (4/4 passed). (H) Admin delete user - deletion works, old token invalid, login fails, 404 for non-existent (4/4 passed). (I) Permissions metadata - manage_users included (19 total: 14 sections + 5 meta) (1/1 passed). (J) JWT role separation - user token has role='user', admin token has isSuper=true/role='admin', cross-role access blocked (4/4 passed). CRITICAL FINDINGS: (1) JWT role separation working perfectly - user tokens cannot access admin endpoints, admin tokens cannot access user endpoints. (2) Banned user enforcement works on both login and existing tokens. (3) User deletion properly invalidates tokens. (4) Newsletter subscription integration working - new users automatically subscribed if opted in. (5) Permission system correctly enforces manage_users permission for non-super admins. NO ISSUES FOUND. All user authentication features are production-ready."
 
     message: "FOOTER EMAIL ICON MAILTO BEHAVIOR - ✅ VERIFIED AND WORKING: Tested the email icon mailto link in the footer social icons row. ALL CHECKS PASSED. Test results: (1) href attribute exactly matches expected format: 'mailto:luca@essentialgemstones.com?subject=Contact%20Essential%20Gemstones' with proper URL encoding (%20 for spaces). (2) aria-label correctly contains: 'Email luca@essentialgemstones.com'. (3) title attribute also contains: 'Email luca@essentialgemstones.com'. (4) Both 'To' address (luca@essentialgemstones.com) and 'Subject' parameter (Contact Essential Gemstones) are present in the mailto URL. (5) DOM verification confirms the link is correctly rendered in the footer. (6) No console errors detected. (7) Screenshot captured showing footer with three social icons (Instagram, Facebook, Email). The implementation correctly pulls values from site.footer.contactEmail and site.footer.contactSubject with hard-coded fallbacks as specified. Feature is production-ready."
+
+
+  - agent: "testing"
+    message: "GEMINI CHAT PROMPT FIXES VERIFICATION COMPLETE: All 5 comprehensive test cases passed (10/10 runs total - each test run twice to account for LLM non-determinism). Verified the AI system prompt fixes for pronoun correctness and age descriptor removal. KEY FINDINGS: (1) PRONOUN CORRECTNESS: 100% success rate across all 10 runs. Luca consistently referred to with he/him/his pronouns. Zero instances of forbidden pronouns (she/her/they) found in any response. (2) AGE DESCRIPTOR REMOVAL: 100% success rate. Zero instances of age-forward descriptors ('nine-year-old', 'young founder', 'kid founder', 'young boy', etc.) in any response except when visitor explicitly asks about age (Test 3). (3) AGE QUESTION HANDLING: Direct age questions correctly answered with age information while maintaining correct pronouns. (4) CROSS-MODE CONSISTENCY: Prompt fixes working correctly in all three modes (ask-luca, stone-guide, admin-writer). (5) SSE STREAMING: Verified correct format with 'event: session', streamed 'data:' chunks, and terminal 'event: done'. All replies meaningful (>30 chars). TECHNICAL DETAILS: System prompts in /app/backend/server.py (lines 1014-1020) correctly enforce voice rules. The _system_prompt_for() function applies these rules to all three chat modes. CONCLUSION: The prompt fixes are production-ready and working correctly. No issues found. Feature ready for user acceptance."
 
