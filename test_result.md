@@ -613,6 +613,18 @@ backend:
         agent: "testing"
         comment: "✅ GEMINI CHAT PROMPT FIXES VERIFIED: All 5 comprehensive test cases passed (10/10 runs - each test run twice for LLM non-determinism). Tested pronoun correctness and age descriptor removal across all three chat modes. TEST RESULTS: (Test 1) Pronoun correctness in ask-luca mode - PASSED both runs: Luca correctly referred to with he/him/his pronouns, zero uses of she/her/they. (Test 2) No age qualifiers in ask-luca mode - PASSED both runs: Zero uses of 'nine-year-old', 'young founder', 'kid founder', 'young boy', etc. Luca referred to as 'our founder' or 'Luca'. (Test 3) Age question handling in ask-luca mode - PASSED both runs: Direct age questions correctly answered (mentions 'nine years old' when explicitly asked), still uses correct pronouns. (Test 4) Pronouns in stone-guide mode - PASSED both runs: Correct he/him/his pronouns, no forbidden pronouns, no age descriptors. (Test 5) Admin-writer mode with admin auth - PASSED both runs: Correct pronouns, no age descriptors, admin authentication working. CRITICAL FINDINGS: (1) System prompts correctly enforce 'Luca is a boy. ALWAYS use he/him/his. NEVER use she/her/they.' (2) Age-forward descriptors successfully removed - no mentions of 'nine-year-old entrepreneur', 'young founder', 'kid founder', etc. unless visitor explicitly asks about age. (3) Voice rules applied to all three modes (ask-luca, stone-guide, admin-writer). (4) SSE streaming format verified: correct 'event: session', streamed 'data:' chunks, terminal 'event: done'. (5) All replies meaningful (>30 chars). NO ISSUES FOUND. Prompt fixes are production-ready and working correctly across all chat modes."
 
+  - task: "Claude Sonnet 4.5 chat endpoint migration verification"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ CLAUDE SONNET 4.5 MIGRATION VERIFIED: Backend successfully switched from Gemini to Anthropic Claude Sonnet 4.5 (claude-sonnet-4-5) due to previous AuthenticationError 'key not allowed to access model'. All 5 comprehensive test scenarios passed (10/10 runs - each test run twice). TEST RESULTS: (Test 1) ask-luca mode - PASSED both runs: Returns HTTP 200 with text/event-stream, emits 'event: session' with UUID, streams data chunks (2-4 chunks), terminates with 'event: done'. Reply length 250-295 chars, mentions lava stone care topics (water, chemicals, cleaning, wiping with cloth). (Test 2) stone-guide mode - PASSED both runs: Returns 200 SSE stream, reply length 729-1012 chars, mentions Red Jasper and 7 Chakra Lava Stone Bracelet for grounding. (Test 3) admin-writer mode - PASSED both runs: Admin login successful (password '1121211221'), admin token authentication working, returns 200 SSE stream with product description (209-295 chars) mentioning amethyst, lava stone, bracelet. (Test 4) Prompt voice rules - PASSED both runs: NO forbidden pronouns (she/her/hers/herself) found, NO age qualifiers (nine-year-old, young founder, kid founder, young boy) found, correct pronouns (he/him/his) present. (Test 5) No auth error propagation - PASSED: ZERO occurrences of 'AuthenticationError', 'key not allowed', 'OpenAIException', 'not allowed to access model' in any response. CRITICAL FINDINGS: (1) Claude Sonnet 4.5 integration working correctly with emergentintegrations library (CHAT_PROVIDER='anthropic', CHAT_MODEL='claude-sonnet-4-5' at lines 945-946). (2) SSE streaming format correct across all modes. (3) All three chat modes operational (ask-luca, stone-guide, admin-writer). (4) Voice rules enforced correctly by Claude. (5) NO authentication errors - migration successful. NO ISSUES FOUND. Claude Sonnet 4.5 chat endpoint is production-ready."
+
 frontend:
   - task: "Frontend integration"
     implemented: false
@@ -640,15 +652,15 @@ frontend:
 
 metadata:
   created_by: "testing_agent"
-  version: "1.6"
-  test_sequence: 7
+  version: "1.7"
+  test_sequence: 8
   run_ui: false
   backend_url: "https://gemstone-makeover.preview.emergentagent.com"
   test_date: "2026-07-01"
 
 test_plan:
   current_focus:
-    - "Gemini chat prompt fixes"
+    - "Claude Sonnet 4.5 chat endpoint migration verification"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -676,4 +688,7 @@ agent_communication:
 
   - agent: "testing"
     message: "GEMINI CHAT PROMPT FIXES VERIFICATION COMPLETE: All 5 comprehensive test cases passed (10/10 runs total - each test run twice to account for LLM non-determinism). Verified the AI system prompt fixes for pronoun correctness and age descriptor removal. KEY FINDINGS: (1) PRONOUN CORRECTNESS: 100% success rate across all 10 runs. Luca consistently referred to with he/him/his pronouns. Zero instances of forbidden pronouns (she/her/they) found in any response. (2) AGE DESCRIPTOR REMOVAL: 100% success rate. Zero instances of age-forward descriptors ('nine-year-old', 'young founder', 'kid founder', 'young boy', etc.) in any response except when visitor explicitly asks about age (Test 3). (3) AGE QUESTION HANDLING: Direct age questions correctly answered with age information while maintaining correct pronouns. (4) CROSS-MODE CONSISTENCY: Prompt fixes working correctly in all three modes (ask-luca, stone-guide, admin-writer). (5) SSE STREAMING: Verified correct format with 'event: session', streamed 'data:' chunks, and terminal 'event: done'. All replies meaningful (>30 chars). TECHNICAL DETAILS: System prompts in /app/backend/server.py (lines 1014-1020) correctly enforce voice rules. The _system_prompt_for() function applies these rules to all three chat modes. CONCLUSION: The prompt fixes are production-ready and working correctly. No issues found. Feature ready for user acceptance."
+
+  - agent: "testing"
+    message: "CLAUDE SONNET 4.5 MIGRATION VERIFICATION COMPLETE: Backend successfully migrated from Gemini to Anthropic Claude Sonnet 4.5 to resolve AuthenticationError 'key not allowed to access model'. All 5 comprehensive test scenarios passed (10/10 runs - each test run twice). DETAILED TEST RESULTS: (Test 1) ask-luca mode bracelet care - PASSED both runs: HTTP 200, text/event-stream content-type, correct SSE structure (event: session → data chunks → event: done), reply length 250-295 chars, mentions lava stone care (water, chemicals, cleaning, cloth). (Test 2) stone-guide mode grounding - PASSED both runs: HTTP 200, SSE streaming working, reply length 729-1012 chars, mentions Red Jasper and 7 Chakra Lava Stone Bracelet for grounding. (Test 3) admin-writer mode with admin auth - PASSED both runs: Admin login successful (password '1121211221'), Bearer token authentication working, HTTP 200, reply length 209-295 chars, product description mentions amethyst/lava/stone/bracelet. (Test 4) Prompt voice rules - PASSED both runs: ZERO forbidden pronouns (she/her/hers/herself), ZERO age qualifiers (nine-year-old, young founder, kid founder, young boy), correct pronouns (he/him/his) present. (Test 5) No auth error propagation - PASSED: ZERO occurrences of 'AuthenticationError', 'key not allowed', 'OpenAIException', 'not allowed to access model', 'permission denied', 'invalid api key' in any response. CRITICAL FINDINGS: (1) Claude Sonnet 4.5 integration fully operational (CHAT_PROVIDER='anthropic', CHAT_MODEL='claude-sonnet-4-5' at server.py lines 945-946). (2) SSE streaming format correct across all modes. (3) All three chat modes working (ask-luca, stone-guide, admin-writer). (4) Voice rules enforced correctly by Claude. (5) NO authentication errors - migration successful. NO ISSUES FOUND. Claude Sonnet 4.5 chat endpoint is production-ready."
 

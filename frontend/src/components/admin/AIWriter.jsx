@@ -104,7 +104,7 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-[#c9a876]" />
             <span className="font-serif text-lg">Write with AI</span>
-            <span className="text-[10px] tracking-[0.2em] uppercase bg-[#c9a876]/20 text-[#c9a876] px-2 py-0.5 rounded">Gemini</span>
+            <span className="text-[10px] tracking-[0.2em] uppercase bg-[#c9a876]/20 text-[#c9a876] px-2 py-0.5 rounded">Claude</span>
           </div>
           <button onClick={onClose} aria-label="Close" className="w-9 h-9 rounded-full hover:bg-[#241b15] flex items-center justify-center"><X className="w-4 h-4" /></button>
         </div>

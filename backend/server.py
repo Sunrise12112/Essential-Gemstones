@@ -942,7 +942,8 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, Strea
 from fastapi.responses import StreamingResponse
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
-GEMINI_MODEL = "gemini-2.5-flash"
+CHAT_PROVIDER = "anthropic"
+CHAT_MODEL = "claude-sonnet-4-5"
 
 CHAT_MODES = {"ask-luca", "stone-guide", "admin-writer"}
 
@@ -1125,7 +1126,7 @@ async def chat_stream(payload: ChatMessageIn, request: Request) -> StreamingResp
         api_key=EMERGENT_LLM_KEY,
         session_id=session_id,
         system_message=system_prompt,
-    ).with_model("gemini", GEMINI_MODEL)
+    ).with_model(CHAT_PROVIDER, CHAT_MODEL)
 
     # Replay prior turns so Gemini has full context (llm history is per-instance)
     prior = session_doc.get("messages") or []

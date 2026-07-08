@@ -1,758 +1,447 @@
 #!/usr/bin/env python3
 """
-Comprehensive backend test suite for Essential Gemstones user authentication endpoints.
-Tests scenarios A-J as specified in the review request.
+Backend test for Claude Sonnet 4.5 chat endpoint verification.
+Tests all 5 scenarios from the review request.
 """
-import json
-import sys
-import time
-from typing import Any, Optional
-
-import jwt
 import requests
+import json
+import re
+from typing import List, Tuple
 
-# Configuration
-BASE_URL = "https://gemstone-makeover.preview.emergentagent.com/api"
-MASTER_PASSWORD = "1121211221"
-JWT_SECRET = "essentialgemstones-luca-secret-2026"
-JWT_ALG = "HS256"
+BACKEND_URL = "https://gemstone-makeover.preview.emergentagent.com"
+ADMIN_PASSWORD = "1121211221"
 
-# Test data
-TEST_USER_EMAIL = f"jane+test{int(time.time())}@example.com"
-TEST_USER_FULLNAME = "Jane Doe"
-TEST_USER_PASSWORD = "supersecret"
-
-# Global state
-master_token = None
-jane_token = None
-jane_id = None
-viewer_id = None
-viewer_token = None
-
-
-def log_test(scenario: str, test: str, status: str, details: str = ""):
-    """Log test results in a structured format."""
-    symbol = "✅" if status == "PASS" else "❌"
-    print(f"{symbol} [{scenario}] {test}")
-    if details:
-        print(f"   {details}")
-
-
-def decode_token(token: str) -> dict:
-    """Decode JWT token without verification for inspection."""
-    try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def test_a_user_registration():
-    """Test scenario A: User registration."""
-    global jane_token, jane_id
+def parse_sse_stream(response) -> Tuple[str, str, List[str], bool]:
+    """
+    Parse SSE stream and return (session_id, concatenated_reply, data_chunks, has_error).
+    """
+    session_id = ""
+    data_chunks = []
+    has_error = False
+    error_msg = ""
     
+    lines = response.text.strip().split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        if line.startswith('event: session'):
+            # Next line should be data: <uuid>
+            if i + 1 < len(lines):
+                data_line = lines[i + 1].strip()
+                if data_line.startswith('data: '):
+                    session_id = data_line[6:].strip()
+            i += 2
+            continue
+        
+        if line.startswith('event: error'):
+            has_error = True
+            # Next line should be data: <error>
+            if i + 1 < len(lines):
+                data_line = lines[i + 1].strip()
+                if data_line.startswith('data: '):
+                    error_msg = data_line[6:].strip()
+            i += 2
+            continue
+        
+        if line.startswith('event: done'):
+            i += 2
+            continue
+        
+        if line.startswith('data: '):
+            chunk = line[6:]
+            # Unescape newlines (SSE escapes \n as \\n)
+            chunk = chunk.replace('\\n', '\n')
+            data_chunks.append(chunk)
+            i += 1
+            continue
+        
+        i += 1
+    
+    concatenated_reply = ''.join(data_chunks)
+    
+    if has_error:
+        print(f"  ⚠️  ERROR EVENT DETECTED: {error_msg}")
+    
+    return session_id, concatenated_reply, data_chunks, has_error
+
+
+def test_1_ask_luca():
+    """Test 1: ask-luca returns a real reply about bracelet care."""
     print("\n" + "="*80)
-    print("SCENARIO A: USER REGISTRATION")
+    print("TEST 1: ask-luca mode - bracelet care question")
     print("="*80)
     
-    # A1: Valid registration
-    resp = requests.post(f"{BASE_URL}/auth/register", json={
-        "fullName": TEST_USER_FULLNAME,
-        "email": TEST_USER_EMAIL,
-        "password": TEST_USER_PASSWORD,
-        "subscribeNewsletter": True
-    })
+    url = f"{BACKEND_URL}/api/chat/stream"
+    payload = {
+        "mode": "ask-luca",
+        "message": "How do I care for my bracelet?"
+    }
     
-    if resp.status_code == 200:
-        data = resp.json()
-        if "token" in data and "user" in data:
-            jane_token = data["token"]
-            user = data["user"]
-            jane_id = user.get("id")
-            
-            # Verify user object structure
-            required_fields = ["id", "fullName", "email", "isBanned", "favorites", "createdAt"]
-            missing = [f for f in required_fields if f not in user]
-            has_password = "passwordHash" in user or "password" in user
-            
-            if not missing and not has_password and user["isBanned"] == False:
-                log_test("A1", "Valid registration returns 200 with token and user", "PASS",
-                        f"User ID: {jane_id}, Email: {user['email']}")
-            else:
-                log_test("A1", "Valid registration returns 200 with token and user", "FAIL",
-                        f"Missing fields: {missing}, Has password: {has_password}")
-        else:
-            log_test("A1", "Valid registration returns 200 with token and user", "FAIL",
-                    f"Missing token or user in response: {data}")
-    else:
-        log_test("A1", "Valid registration returns 200 with token and user", "FAIL",
-                f"Status: {resp.status_code}, Body: {resp.text}")
+    print(f"POST {url}")
+    print(f"Body: {json.dumps(payload, indent=2)}")
     
-    # A2: Duplicate email
-    resp = requests.post(f"{BASE_URL}/auth/register", json={
-        "fullName": "Jane Duplicate",
-        "email": TEST_USER_EMAIL,
-        "password": "anotherpassword",
-        "subscribeNewsletter": False
-    })
+    response = requests.post(url, json=payload, stream=True, timeout=60)
     
-    if resp.status_code == 400:
-        detail = resp.json().get("detail", "")
-        if "already exists" in detail.lower():
-            log_test("A2", "Duplicate email returns 400", "PASS", f"Detail: {detail}")
-        else:
-            log_test("A2", "Duplicate email returns 400", "FAIL", f"Wrong detail: {detail}")
-    else:
-        log_test("A2", "Duplicate email returns 400", "FAIL", f"Status: {resp.status_code}")
+    print(f"\nStatus: {response.status_code}")
+    print(f"Content-Type: {response.headers.get('content-type')}")
     
-    # A3: Password too short
-    resp = requests.post(f"{BASE_URL}/auth/register", json={
-        "fullName": "Short Pass",
-        "email": f"short{int(time.time())}@example.com",
-        "password": "abc",
-        "subscribeNewsletter": False
-    })
+    # Check HTTP 200
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}"
     
-    if resp.status_code == 400:
-        log_test("A3", "Short password returns 400", "PASS")
-    else:
-        log_test("A3", "Short password returns 400", "FAIL", f"Status: {resp.status_code}")
+    # Check content-type
+    content_type = response.headers.get('content-type', '')
+    assert 'text/event-stream' in content_type, f"Expected text/event-stream, got {content_type}"
     
-    # A4: Empty fullName
-    resp = requests.post(f"{BASE_URL}/auth/register", json={
-        "fullName": "",
-        "email": f"empty{int(time.time())}@example.com",
-        "password": "validpassword",
-        "subscribeNewsletter": False
-    })
+    # Parse SSE stream
+    session_id, reply, chunks, has_error = parse_sse_stream(response)
     
-    if resp.status_code == 400:
-        log_test("A4", "Empty fullName returns 400", "PASS")
-    else:
-        log_test("A4", "Empty fullName returns 400", "FAIL", f"Status: {resp.status_code}")
+    print(f"\nSession ID: {session_id}")
+    print(f"Data chunks received: {len(chunks)}")
+    print(f"Concatenated reply length: {len(reply)} chars")
+    print(f"Reply preview (first 300 chars):\n{reply[:300]}")
     
-    # A5: Malformed email
-    resp = requests.post(f"{BASE_URL}/auth/register", json={
-        "fullName": "Bad Email",
-        "email": "not-an-email",
-        "password": "validpassword",
-        "subscribeNewsletter": False
-    })
+    # Assertions
+    assert session_id, "Session ID must be present"
+    assert len(chunks) > 0, "Must emit at least one data chunk"
+    assert len(reply) > 30, f"Reply too short: {len(reply)} chars (expected >30)"
+    assert not has_error, "Must NOT emit event: error"
     
-    if resp.status_code == 422:
-        log_test("A5", "Malformed email returns 422", "PASS")
-    else:
-        log_test("A5", "Malformed email returns 422", "FAIL", f"Status: {resp.status_code}")
+    # Check for auth errors
+    auth_error_patterns = [
+        "AuthenticationError",
+        "key not allowed",
+        "OpenAIException",
+        "not allowed to access model"
+    ]
+    for pattern in auth_error_patterns:
+        assert pattern not in reply, f"Found auth error pattern: {pattern}"
+        assert pattern not in response.text, f"Found auth error pattern in raw response: {pattern}"
     
-    # A6: Verify newsletter subscription
-    # Get master token first
-    global master_token
-    resp = requests.post(f"{BASE_URL}/admin/login", json={"password": MASTER_PASSWORD})
-    if resp.status_code == 200:
-        master_token = resp.json()["token"]
-        
-        # Check subscribers list
-        resp = requests.get(f"{BASE_URL}/admin/subscribers",
-                          headers={"Authorization": f"Bearer {master_token}"})
-        if resp.status_code == 200:
-            subscribers = resp.json()
-            emails = [s["email"] for s in subscribers]
-            if TEST_USER_EMAIL in emails:
-                log_test("A6", "Newsletter subscription persisted", "PASS")
-            else:
-                log_test("A6", "Newsletter subscription persisted", "FAIL",
-                        f"Email not in subscribers: {emails}")
-        else:
-            log_test("A6", "Newsletter subscription persisted", "FAIL",
-                    f"Cannot get subscribers: {resp.status_code}")
-    else:
-        log_test("A6", "Newsletter subscription persisted", "FAIL",
-                f"Cannot login as master: {resp.status_code}")
+    # Check content mentions lava stone care
+    reply_lower = reply.lower()
+    care_keywords = ['water', 'chemical', 'clean', 'wipe', 'cloth', 'care', 'avoid']
+    found_keywords = [kw for kw in care_keywords if kw in reply_lower]
+    print(f"\nCare keywords found: {found_keywords}")
+    assert len(found_keywords) >= 2, f"Reply should mention lava stone care topics (found: {found_keywords})"
+    
+    print("\n✅ TEST 1 PASSED")
+    return session_id
 
 
-def test_b_user_login():
-    """Test scenario B: User login."""
+def test_2_stone_guide():
+    """Test 2: stone-guide returns a real reply about grounding."""
     print("\n" + "="*80)
-    print("SCENARIO B: USER LOGIN")
+    print("TEST 2: stone-guide mode - grounding question")
     print("="*80)
     
-    # B1: Valid login
-    resp = requests.post(f"{BASE_URL}/auth/login", json={
-        "email": TEST_USER_EMAIL,
-        "password": TEST_USER_PASSWORD
-    })
+    url = f"{BACKEND_URL}/api/chat/stream"
+    payload = {
+        "mode": "stone-guide",
+        "message": "I want to feel more grounded and centered."
+    }
     
-    if resp.status_code == 200:
-        data = resp.json()
-        if "token" in data and "user" in data:
-            log_test("B1", "Valid login returns 200 with token and user", "PASS")
-        else:
-            log_test("B1", "Valid login returns 200 with token and user", "FAIL",
-                    f"Missing token or user: {data}")
-    else:
-        log_test("B1", "Valid login returns 200 with token and user", "FAIL",
-                f"Status: {resp.status_code}")
+    print(f"POST {url}")
+    print(f"Body: {json.dumps(payload, indent=2)}")
     
-    # B2: Wrong password
-    resp = requests.post(f"{BASE_URL}/auth/login", json={
-        "email": TEST_USER_EMAIL,
-        "password": "wrongpassword"
-    })
+    response = requests.post(url, json=payload, stream=True, timeout=60)
     
-    if resp.status_code == 401:
-        detail = resp.json().get("detail", "")
-        if "Invalid email or password" in detail:
-            log_test("B2", "Wrong password returns 401", "PASS")
-        else:
-            log_test("B2", "Wrong password returns 401", "FAIL", f"Wrong detail: {detail}")
-    else:
-        log_test("B2", "Wrong password returns 401", "FAIL", f"Status: {resp.status_code}")
+    print(f"\nStatus: {response.status_code}")
+    print(f"Content-Type: {response.headers.get('content-type')}")
     
-    # B3: Unknown email
-    resp = requests.post(f"{BASE_URL}/auth/login", json={
-        "email": f"unknown{int(time.time())}@example.com",
-        "password": "anypassword"
-    })
+    # Check HTTP 200
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}"
     
-    if resp.status_code == 401:
-        log_test("B3", "Unknown email returns 401", "PASS")
-    else:
-        log_test("B3", "Unknown email returns 401", "FAIL", f"Status: {resp.status_code}")
+    # Check content-type
+    content_type = response.headers.get('content-type', '')
+    assert 'text/event-stream' in content_type, f"Expected text/event-stream, got {content_type}"
+    
+    # Parse SSE stream
+    session_id, reply, chunks, has_error = parse_sse_stream(response)
+    
+    print(f"\nSession ID: {session_id}")
+    print(f"Data chunks received: {len(chunks)}")
+    print(f"Concatenated reply length: {len(reply)} chars")
+    print(f"Reply preview (first 300 chars):\n{reply[:300]}")
+    
+    # Assertions
+    assert session_id, "Session ID must be present"
+    assert len(chunks) > 0, "Must emit at least one data chunk"
+    assert len(reply) > 30, f"Reply too short: {len(reply)} chars (expected >30)"
+    assert not has_error, "Must NOT emit event: error"
+    
+    # Check for auth errors
+    auth_error_patterns = [
+        "AuthenticationError",
+        "key not allowed",
+        "OpenAIException",
+        "not allowed to access model"
+    ]
+    for pattern in auth_error_patterns:
+        assert pattern not in reply, f"Found auth error pattern: {pattern}"
+        assert pattern not in response.text, f"Found auth error pattern in raw response: {pattern}"
+    
+    # Check content mentions a stone (e.g., Red Jasper, Chakra)
+    reply_lower = reply.lower()
+    stone_keywords = ['jasper', 'chakra', 'stone', 'grounding', 'ground', 'center']
+    found_keywords = [kw for kw in stone_keywords if kw in reply_lower]
+    print(f"\nStone keywords found: {found_keywords}")
+    assert len(found_keywords) >= 2, f"Reply should mention stones for grounding (found: {found_keywords})"
+    
+    print("\n✅ TEST 2 PASSED")
+    return session_id
 
 
-def test_c_auth_me():
-    """Test scenario C: /auth/me endpoint."""
+def test_3_admin_writer():
+    """Test 3: admin-writer with admin token."""
     print("\n" + "="*80)
-    print("SCENARIO C: /auth/me ENDPOINT")
+    print("TEST 3: admin-writer mode with admin authentication")
     print("="*80)
     
-    # C1: With Jane's user token
-    resp = requests.get(f"{BASE_URL}/auth/me",
-                       headers={"Authorization": f"Bearer {jane_token}"})
+    # First, login as master admin
+    login_url = f"{BACKEND_URL}/api/admin/login"
+    login_payload = {"password": ADMIN_PASSWORD}
     
-    if resp.status_code == 200:
-        data = resp.json()
-        if "user" in data:
-            log_test("C1", "GET /auth/me with user token returns 200", "PASS")
-        else:
-            log_test("C1", "GET /auth/me with user token returns 200", "FAIL",
-                    f"Missing user in response: {data}")
-    else:
-        log_test("C1", "GET /auth/me with user token returns 200", "FAIL",
-                f"Status: {resp.status_code}")
+    print(f"POST {login_url}")
+    print(f"Body: {json.dumps(login_payload, indent=2)}")
     
-    # C2: Without token
-    resp = requests.get(f"{BASE_URL}/auth/me")
+    login_response = requests.post(login_url, json=login_payload, timeout=30)
+    print(f"Login Status: {login_response.status_code}")
     
-    if resp.status_code == 401:
-        log_test("C2", "GET /auth/me without token returns 401", "PASS")
-    else:
-        log_test("C2", "GET /auth/me without token returns 401", "FAIL",
-                f"Status: {resp.status_code}")
+    assert login_response.status_code == 200, f"Login failed: {login_response.status_code}"
     
-    # C3: With master admin token
-    resp = requests.get(f"{BASE_URL}/auth/me",
-                       headers={"Authorization": f"Bearer {master_token}"})
+    login_data = login_response.json()
+    admin_token = login_data.get('token')
+    assert admin_token, "Admin token not received"
+    print(f"Admin token received: {admin_token[:20]}...")
     
-    if resp.status_code == 401:
-        detail = resp.json().get("detail", "")
-        if "User token required" in detail:
-            log_test("C3", "GET /auth/me with admin token returns 401", "PASS")
-        else:
-            log_test("C3", "GET /auth/me with admin token returns 401", "FAIL",
-                    f"Wrong detail: {detail}")
-    else:
-        log_test("C3", "GET /auth/me with admin token returns 401", "FAIL",
-                f"Status: {resp.status_code}")
+    # Now test admin-writer mode
+    url = f"{BACKEND_URL}/api/chat/stream"
+    payload = {
+        "mode": "admin-writer",
+        "message": "Write a 2-sentence description for a lava-stone bracelet with amethyst."
+    }
+    headers = {
+        "Authorization": f"Bearer {admin_token}"
+    }
+    
+    print(f"\nPOST {url}")
+    print(f"Headers: Authorization: Bearer {admin_token[:20]}...")
+    print(f"Body: {json.dumps(payload, indent=2)}")
+    
+    response = requests.post(url, json=payload, headers=headers, stream=True, timeout=60)
+    
+    print(f"\nStatus: {response.status_code}")
+    print(f"Content-Type: {response.headers.get('content-type')}")
+    
+    # Check HTTP 200
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+    
+    # Check content-type
+    content_type = response.headers.get('content-type', '')
+    assert 'text/event-stream' in content_type, f"Expected text/event-stream, got {content_type}"
+    
+    # Parse SSE stream
+    session_id, reply, chunks, has_error = parse_sse_stream(response)
+    
+    print(f"\nSession ID: {session_id}")
+    print(f"Data chunks received: {len(chunks)}")
+    print(f"Concatenated reply length: {len(reply)} chars")
+    print(f"Reply preview (first 300 chars):\n{reply[:300]}")
+    
+    # Assertions
+    assert session_id, "Session ID must be present"
+    assert len(chunks) > 0, "Must emit at least one data chunk"
+    assert len(reply) > 30, f"Reply too short: {len(reply)} chars (expected >30)"
+    assert not has_error, "Must NOT emit event: error"
+    
+    # Check for auth errors
+    auth_error_patterns = [
+        "AuthenticationError",
+        "key not allowed",
+        "OpenAIException",
+        "not allowed to access model"
+    ]
+    for pattern in auth_error_patterns:
+        assert pattern not in reply, f"Found auth error pattern: {pattern}"
+        assert pattern not in response.text, f"Found auth error pattern in raw response: {pattern}"
+    
+    # Check content is a product description (not an error)
+    reply_lower = reply.lower()
+    description_keywords = ['amethyst', 'lava', 'stone', 'bracelet', 'calm', 'peace', 'energy', 'healing']
+    found_keywords = [kw for kw in description_keywords if kw in reply_lower]
+    print(f"\nDescription keywords found: {found_keywords}")
+    assert len(found_keywords) >= 2, f"Reply should be a product description (found: {found_keywords})"
+    
+    print("\n✅ TEST 3 PASSED")
+    return session_id
 
 
-def test_d_update_profile():
-    """Test scenario D: Update own profile."""
-    global jane_token
-    
+def test_4_prompt_voice_rules():
+    """Test 4: Prompt voice rules - no she/her, no age qualifiers."""
     print("\n" + "="*80)
-    print("SCENARIO D: UPDATE OWN PROFILE")
+    print("TEST 4: Prompt voice rules - founder question")
     print("="*80)
     
-    # D1: Update fullName
-    resp = requests.put(f"{BASE_URL}/auth/me",
-                       headers={"Authorization": f"Bearer {jane_token}"},
-                       json={"fullName": "Jane D. Smith"})
+    url = f"{BACKEND_URL}/api/chat/stream"
+    payload = {
+        "mode": "ask-luca",
+        "message": "Tell me about who founded this brand."
+    }
     
-    if resp.status_code == 200:
-        data = resp.json()
-        if data.get("user", {}).get("fullName") == "Jane D. Smith":
-            log_test("D1", "Update fullName returns 200 and persists", "PASS")
-        else:
-            log_test("D1", "Update fullName returns 200 and persists", "FAIL",
-                    f"Name not updated: {data}")
-    else:
-        log_test("D1", "Update fullName returns 200 and persists", "FAIL",
-                f"Status: {resp.status_code}")
+    print(f"POST {url}")
+    print(f"Body: {json.dumps(payload, indent=2)}")
     
-    # D2: Update password
-    new_password = "newpassword"
-    resp = requests.put(f"{BASE_URL}/auth/me",
-                       headers={"Authorization": f"Bearer {jane_token}"},
-                       json={"password": new_password})
+    response = requests.post(url, json=payload, stream=True, timeout=60)
     
-    if resp.status_code == 200:
-        # Try logging in with new password
-        resp2 = requests.post(f"{BASE_URL}/auth/login", json={
-            "email": TEST_USER_EMAIL,
-            "password": new_password
-        })
-        if resp2.status_code == 200:
-            jane_token = resp2.json()["token"]  # Update token
-            log_test("D2", "Update password works and login succeeds", "PASS")
-        else:
-            log_test("D2", "Update password works and login succeeds", "FAIL",
-                    f"Login failed: {resp2.status_code}")
-    else:
-        log_test("D2", "Update password works and login succeeds", "FAIL",
-                f"Status: {resp.status_code}")
+    print(f"\nStatus: {response.status_code}")
+    print(f"Content-Type: {response.headers.get('content-type')}")
     
-    # D3: Password too short
-    resp = requests.put(f"{BASE_URL}/auth/me",
-                       headers={"Authorization": f"Bearer {jane_token}"},
-                       json={"password": "abc"})
+    # Check HTTP 200
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}"
     
-    if resp.status_code == 400:
-        log_test("D3", "Short password returns 400", "PASS")
-    else:
-        log_test("D3", "Short password returns 400", "FAIL", f"Status: {resp.status_code}")
+    # Parse SSE stream
+    session_id, reply, chunks, has_error = parse_sse_stream(response)
+    
+    print(f"\nSession ID: {session_id}")
+    print(f"Data chunks received: {len(chunks)}")
+    print(f"Concatenated reply length: {len(reply)} chars")
+    print(f"Full reply:\n{reply}")
+    
+    # Assertions
+    assert session_id, "Session ID must be present"
+    assert len(reply) > 30, f"Reply too short: {len(reply)} chars (expected >30)"
+    assert not has_error, "Must NOT emit event: error"
+    
+    # Check for forbidden pronouns (she/her/hers/herself)
+    forbidden_pronouns = ['she', 'her', 'hers', 'herself']
+    # Use word boundaries to avoid false positives (e.g., "other" contains "her")
+    for pronoun in forbidden_pronouns:
+        pattern = r'\b' + pronoun + r'\b'
+        matches = re.findall(pattern, reply, re.IGNORECASE)
+        if matches:
+            # Check if it's referring to Luca (context check)
+            # For simplicity, we'll flag any occurrence
+            print(f"  ⚠️  Found forbidden pronoun: {matches}")
+            assert False, f"Reply contains forbidden pronoun '{pronoun}' (found: {matches}). Reply must use he/him/his for Luca."
+    
+    print("  ✓ No forbidden pronouns (she/her/hers/herself) found")
+    
+    # Check for age qualifiers
+    age_qualifiers = [
+        'nine-year-old', '9-year-old', '9 year old',
+        'kid founder', 'young founder', 'young boy',
+        'child entrepreneur', 'young entrepreneur'
+    ]
+    for qualifier in age_qualifiers:
+        if qualifier.lower() in reply.lower():
+            print(f"  ⚠️  Found age qualifier: {qualifier}")
+            assert False, f"Reply contains age qualifier '{qualifier}'. Should not lead with age descriptors."
+    
+    print("  ✓ No age qualifiers found")
+    
+    # Check for correct pronouns (he/him/his)
+    correct_pronouns = ['he', 'him', 'his']
+    found_correct = []
+    for pronoun in correct_pronouns:
+        pattern = r'\b' + pronoun + r'\b'
+        if re.search(pattern, reply, re.IGNORECASE):
+            found_correct.append(pronoun)
+    
+    print(f"  ✓ Correct pronouns found: {found_correct}")
+    assert len(found_correct) > 0, "Reply should contain he/him/his when referring to Luca"
+    
+    print("\n✅ TEST 4 PASSED")
+    return session_id
 
 
-def test_e_favorites():
-    """Test scenario E: Favorites toggle."""
+def test_5_no_auth_errors():
+    """Test 5: No auth error propagation in any response."""
     print("\n" + "="*80)
-    print("SCENARIO E: FAVORITES TOGGLE")
+    print("TEST 5: No auth error propagation check")
     print("="*80)
     
-    # E1: Add cross-faith to favorites
-    resp = requests.post(f"{BASE_URL}/auth/favorites/cross-faith",
-                        headers={"Authorization": f"Bearer {jane_token}"})
+    # Test multiple modes to ensure no auth errors anywhere
+    test_cases = [
+        {"mode": "ask-luca", "message": "What materials do you use?"},
+        {"mode": "stone-guide", "message": "I need help with focus and clarity."},
+    ]
     
-    if resp.status_code == 200:
-        data = resp.json()
-        if data.get("favorited") == True and "cross-faith" in data.get("favorites", []):
-            log_test("E1", "Add to favorites returns favorited=true", "PASS")
-        else:
-            log_test("E1", "Add to favorites returns favorited=true", "FAIL", f"Data: {data}")
-    else:
-        log_test("E1", "Add to favorites returns favorited=true", "FAIL",
-                f"Status: {resp.status_code}")
+    url = f"{BACKEND_URL}/api/chat/stream"
     
-    # E2: Toggle again (remove)
-    resp = requests.post(f"{BASE_URL}/auth/favorites/cross-faith",
-                        headers={"Authorization": f"Bearer {jane_token}"})
-    
-    if resp.status_code == 200:
-        data = resp.json()
-        if data.get("favorited") == False and "cross-faith" not in data.get("favorites", []):
-            log_test("E2", "Remove from favorites returns favorited=false", "PASS")
-        else:
-            log_test("E2", "Remove from favorites returns favorited=false", "FAIL",
-                    f"Data: {data}")
-    else:
-        log_test("E2", "Remove from favorites returns favorited=false", "FAIL",
-                f"Status: {resp.status_code}")
-    
-    # E3: Add chakra
-    resp = requests.post(f"{BASE_URL}/auth/favorites/chakra",
-                        headers={"Authorization": f"Bearer {jane_token}"})
-    
-    if resp.status_code == 200:
-        data = resp.json()
-        if data.get("favorited") == True and "chakra" in data.get("favorites", []):
-            log_test("E3", "Add chakra to favorites", "PASS")
-        else:
-            log_test("E3", "Add chakra to favorites", "FAIL", f"Data: {data}")
-    else:
-        log_test("E3", "Add chakra to favorites", "FAIL", f"Status: {resp.status_code}")
-    
-    # E4: Verify persistence via /auth/me
-    resp = requests.get(f"{BASE_URL}/auth/me",
-                       headers={"Authorization": f"Bearer {jane_token}"})
-    
-    if resp.status_code == 200:
-        favorites = resp.json().get("user", {}).get("favorites", [])
-        if "chakra" in favorites:
-            log_test("E4", "Favorites persist in /auth/me", "PASS", f"Favorites: {favorites}")
-        else:
-            log_test("E4", "Favorites persist in /auth/me", "FAIL", f"Favorites: {favorites}")
-    else:
-        log_test("E4", "Favorites persist in /auth/me", "FAIL", f"Status: {resp.status_code}")
-    
-    # E5: Without token
-    resp = requests.post(f"{BASE_URL}/auth/favorites/anything")
-    
-    if resp.status_code == 401:
-        log_test("E5", "Favorites without token returns 401", "PASS")
-    else:
-        log_test("E5", "Favorites without token returns 401", "FAIL",
-                f"Status: {resp.status_code}")
-
-
-def test_f_admin_user_management():
-    """Test scenario F: Admin user management."""
-    global viewer_id, viewer_token
-    
-    print("\n" + "="*80)
-    print("SCENARIO F: ADMIN USER MANAGEMENT")
-    print("="*80)
-    
-    # F1: GET /api/admin/users with master token
-    resp = requests.get(f"{BASE_URL}/admin/users",
-                       headers={"Authorization": f"Bearer {master_token}"})
-    
-    if resp.status_code == 200:
-        users = resp.json()
-        jane_found = any(u.get("email") == TEST_USER_EMAIL for u in users)
-        if jane_found:
-            log_test("F1", "GET /admin/users returns Jane", "PASS", f"Total users: {len(users)}")
-        else:
-            log_test("F1", "GET /admin/users returns Jane", "FAIL", f"Jane not found in {users}")
-    else:
-        log_test("F1", "GET /admin/users returns Jane", "FAIL", f"Status: {resp.status_code}")
-    
-    # F2: Without token
-    resp = requests.get(f"{BASE_URL}/admin/users")
-    
-    if resp.status_code == 401:
-        log_test("F2", "GET /admin/users without token returns 401", "PASS")
-    else:
-        log_test("F2", "GET /admin/users without token returns 401", "FAIL",
-                f"Status: {resp.status_code}")
-    
-    # F3: Create viewer admin without manage_users permission
-    resp = requests.post(f"{BASE_URL}/admin/admins",
-                        headers={"Authorization": f"Bearer {master_token}"},
-                        json={
-                            "username": f"viewer{int(time.time())}",
-                            "password": "viewerpw",
-                            "permissions": [],
-                            "isSuper": False
-                        })
-    
-    if resp.status_code == 200:
-        viewer_id = resp.json().get("id")
-        viewer_username = resp.json().get("username")
+    for i, payload in enumerate(test_cases, 1):
+        print(f"\n--- Test case {i}/{len(test_cases)} ---")
+        print(f"Mode: {payload['mode']}")
+        print(f"Message: {payload['message']}")
         
-        # Login as viewer
-        resp2 = requests.post(f"{BASE_URL}/admin/login", json={
-            "username": viewer_username,
-            "password": "viewerpw"
-        })
-        if resp2.status_code == 200:
-            viewer_token = resp2.json()["token"]
-            
-            # Try to access users list
-            resp3 = requests.get(f"{BASE_URL}/admin/users",
-                               headers={"Authorization": f"Bearer {viewer_token}"})
-            if resp3.status_code == 403:
-                log_test("F3", "Viewer without manage_users gets 403", "PASS")
-            else:
-                log_test("F3", "Viewer without manage_users gets 403", "FAIL",
-                        f"Status: {resp3.status_code}")
-        else:
-            log_test("F3", "Viewer without manage_users gets 403", "FAIL",
-                    f"Viewer login failed: {resp2.status_code}")
-    else:
-        log_test("F3", "Viewer without manage_users gets 403", "FAIL",
-                f"Create viewer failed: {resp.status_code}")
-    
-    # F4: Grant manage_users permission
-    resp = requests.put(f"{BASE_URL}/admin/admins/{viewer_id}",
-                       headers={"Authorization": f"Bearer {master_token}"},
-                       json={"permissions": ["manage_users"]})
-    
-    if resp.status_code == 200:
-        # Re-login viewer to get new token
-        resp2 = requests.post(f"{BASE_URL}/admin/login", json={
-            "username": resp.json().get("username"),
-            "password": "viewerpw"
-        })
-        if resp2.status_code == 200:
-            viewer_token = resp2.json()["token"]
-            
-            # Try to access users list again
-            resp3 = requests.get(f"{BASE_URL}/admin/users",
-                               headers={"Authorization": f"Bearer {viewer_token}"})
-            if resp3.status_code == 200:
-                log_test("F4", "Viewer with manage_users gets 200", "PASS")
-            else:
-                log_test("F4", "Viewer with manage_users gets 200", "FAIL",
-                        f"Status: {resp3.status_code}")
-        else:
-            log_test("F4", "Viewer with manage_users gets 200", "FAIL",
-                    f"Re-login failed: {resp2.status_code}")
-    else:
-        log_test("F4", "Viewer with manage_users gets 200", "FAIL",
-                f"Grant permission failed: {resp.status_code}")
-    
-    # F5: Ban Jane
-    resp = requests.put(f"{BASE_URL}/admin/users/{jane_id}",
-                       headers={"Authorization": f"Bearer {master_token}"},
-                       json={"isBanned": True})
-    
-    if resp.status_code == 200:
-        data = resp.json()
-        if data.get("isBanned") == True:
-            log_test("F5", "Ban user returns 200 with isBanned=true", "PASS")
-        else:
-            log_test("F5", "Ban user returns 200 with isBanned=true", "FAIL", f"Data: {data}")
-    else:
-        log_test("F5", "Ban user returns 200 with isBanned=true", "FAIL",
-                f"Status: {resp.status_code}")
-
-
-def test_g_banned_user():
-    """Test scenario G: Banned user flow."""
-    print("\n" + "="*80)
-    print("SCENARIO G: BANNED USER FLOW")
-    print("="*80)
-    
-    # G1: Try to login as banned user
-    resp = requests.post(f"{BASE_URL}/auth/login", json={
-        "email": TEST_USER_EMAIL,
-        "password": "newpassword"
-    })
-    
-    if resp.status_code == 403:
-        detail = resp.json().get("detail", "")
-        if "suspended" in detail.lower():
-            log_test("G1", "Banned user login returns 403", "PASS", f"Detail: {detail}")
-        else:
-            log_test("G1", "Banned user login returns 403", "FAIL", f"Wrong detail: {detail}")
-    else:
-        log_test("G1", "Banned user login returns 403", "FAIL", f"Status: {resp.status_code}")
-    
-    # G2: Try to use old token
-    resp = requests.get(f"{BASE_URL}/auth/me",
-                       headers={"Authorization": f"Bearer {jane_token}"})
-    
-    if resp.status_code == 403:
-        detail = resp.json().get("detail", "")
-        if "suspended" in detail.lower():
-            log_test("G2", "Banned user old token returns 403", "PASS")
-        else:
-            log_test("G2", "Banned user old token returns 403", "FAIL", f"Wrong detail: {detail}")
-    else:
-        log_test("G2", "Banned user old token returns 403", "FAIL", f"Status: {resp.status_code}")
-    
-    # G3: Unban Jane
-    resp = requests.put(f"{BASE_URL}/admin/users/{jane_id}",
-                       headers={"Authorization": f"Bearer {master_token}"},
-                       json={"isBanned": False})
-    
-    if resp.status_code == 200:
-        data = resp.json()
-        if data.get("isBanned") == False:
-            log_test("G3", "Unban user returns 200 with isBanned=false", "PASS")
-        else:
-            log_test("G3", "Unban user returns 200 with isBanned=false", "FAIL", f"Data: {data}")
-    else:
-        log_test("G3", "Unban user returns 200 with isBanned=false", "FAIL",
-                f"Status: {resp.status_code}")
-    
-    # G4: Login after unban
-    resp = requests.post(f"{BASE_URL}/auth/login", json={
-        "email": TEST_USER_EMAIL,
-        "password": "newpassword"
-    })
-    
-    if resp.status_code == 200:
-        log_test("G4", "Login after unban succeeds", "PASS")
-    else:
-        log_test("G4", "Login after unban succeeds", "FAIL", f"Status: {resp.status_code}")
-
-
-def test_h_admin_delete_user():
-    """Test scenario H: Admin delete user."""
-    global jane_token
-    
-    print("\n" + "="*80)
-    print("SCENARIO H: ADMIN DELETE USER")
-    print("="*80)
-    
-    # H1: Delete Jane
-    resp = requests.delete(f"{BASE_URL}/admin/users/{jane_id}",
-                          headers={"Authorization": f"Bearer {master_token}"})
-    
-    if resp.status_code == 200:
-        data = resp.json()
-        if data.get("ok") == True:
-            log_test("H1", "Delete user returns 200 with ok=true", "PASS")
-        else:
-            log_test("H1", "Delete user returns 200 with ok=true", "FAIL", f"Data: {data}")
-    else:
-        log_test("H1", "Delete user returns 200 with ok=true", "FAIL",
-                f"Status: {resp.status_code}")
-    
-    # H2: Try to use Jane's old token
-    resp = requests.get(f"{BASE_URL}/auth/me",
-                       headers={"Authorization": f"Bearer {jane_token}"})
-    
-    if resp.status_code == 401:
-        log_test("H2", "Deleted user token returns 401", "PASS")
-    else:
-        log_test("H2", "Deleted user token returns 401", "FAIL", f"Status: {resp.status_code}")
-    
-    # H3: Try to login as deleted user
-    resp = requests.post(f"{BASE_URL}/auth/login", json={
-        "email": TEST_USER_EMAIL,
-        "password": "newpassword"
-    })
-    
-    if resp.status_code == 401:
-        log_test("H3", "Deleted user login returns 401", "PASS")
-    else:
-        log_test("H3", "Deleted user login returns 401", "FAIL", f"Status: {resp.status_code}")
-    
-    # H4: Delete non-existent user
-    resp = requests.delete(f"{BASE_URL}/admin/users/nonexistent-id",
-                          headers={"Authorization": f"Bearer {master_token}"})
-    
-    if resp.status_code == 404:
-        log_test("H4", "Delete non-existent user returns 404", "PASS")
-    else:
-        log_test("H4", "Delete non-existent user returns 404", "FAIL",
-                f"Status: {resp.status_code}")
-
-
-def test_i_permissions_metadata():
-    """Test scenario I: Permission metadata."""
-    print("\n" + "="*80)
-    print("SCENARIO I: PERMISSIONS METADATA")
-    print("="*80)
-    
-    resp = requests.get(f"{BASE_URL}/permissions")
-    
-    if resp.status_code == 200:
-        data = resp.json()
-        meta_perms = data.get("metaPermissions", [])
-        all_perms = data.get("all", [])
+        response = requests.post(url, json=payload, stream=True, timeout=60)
         
-        # metaPermissions can be either a dict or a list
-        if isinstance(meta_perms, dict):
-            has_manage_users = "manage_users" in meta_perms or "manage_users" in all_perms
-            meta_list = list(meta_perms.keys())
-        else:
-            has_manage_users = "manage_users" in meta_perms or "manage_users" in all_perms
-            meta_list = meta_perms
+        print(f"Status: {response.status_code}")
         
-        if has_manage_users:
-            total_perms = len(all_perms)
-            expected = 19  # 14 sections + 5 meta
-            if total_perms == expected:
-                log_test("I1", "Permissions include manage_users", "PASS",
-                        f"Total: {total_perms}, Meta: {meta_list}")
-            else:
-                log_test("I1", "Permissions include manage_users", "PASS",
-                        f"Total: {total_perms} (expected {expected}), Meta: {meta_list}")
-        else:
-            log_test("I1", "Permissions include manage_users", "FAIL",
-                    f"manage_users not found. Meta: {meta_perms}, All: {all_perms}")
-    else:
-        log_test("I1", "Permissions include manage_users", "FAIL",
-                f"Status: {resp.status_code}")
-
-
-def test_j_jwt_role_separation():
-    """Test scenario J: JWT role separation."""
-    print("\n" + "="*80)
-    print("SCENARIO J: JWT ROLE SEPARATION")
-    print("="*80)
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        
+        # Parse SSE stream
+        session_id, reply, chunks, has_error = parse_sse_stream(response)
+        
+        print(f"Reply length: {len(reply)} chars")
+        print(f"Has error event: {has_error}")
+        
+        # Check for auth error strings
+        auth_error_patterns = [
+            "AuthenticationError",
+            "key not allowed",
+            "OpenAIException",
+            "not allowed to access model",
+            "permission denied",
+            "invalid api key"
+        ]
+        
+        full_response_text = response.text.lower()
+        reply_lower = reply.lower()
+        
+        for pattern in auth_error_patterns:
+            pattern_lower = pattern.lower()
+            assert pattern_lower not in reply_lower, f"Found auth error in reply: {pattern}"
+            assert pattern_lower not in full_response_text, f"Found auth error in raw response: {pattern}"
+        
+        print(f"  ✓ No auth errors found in test case {i}")
     
-    # J1: Create a new user to get a fresh token
-    test_email = f"roletest{int(time.time())}@example.com"
-    resp = requests.post(f"{BASE_URL}/auth/register", json={
-        "fullName": "Role Test",
-        "email": test_email,
-        "password": "testpassword",
-        "subscribeNewsletter": False
-    })
-    
-    if resp.status_code == 200:
-        user_token = resp.json()["token"]
-        user_payload = decode_token(user_token)
-        
-        if user_payload.get("role") == "user":
-            log_test("J1", "User token has role='user'", "PASS", f"Payload: {user_payload}")
-        else:
-            log_test("J1", "User token has role='user'", "FAIL",
-                    f"Role: {user_payload.get('role')}")
-        
-        # J2: Verify admin token
-        admin_payload = decode_token(master_token)
-        is_super = admin_payload.get("isSuper")
-        role = admin_payload.get("role")
-        
-        if is_super == True or role == "admin":
-            log_test("J2", "Admin token has isSuper=true or role='admin'", "PASS",
-                    f"isSuper: {is_super}, role: {role}")
-        else:
-            log_test("J2", "Admin token has isSuper=true or role='admin'", "FAIL",
-                    f"isSuper: {is_super}, role: {role}")
-        
-        # J3: User token cannot access admin endpoints
-        resp = requests.get(f"{BASE_URL}/admin/admins",
-                          headers={"Authorization": f"Bearer {user_token}"})
-        
-        if resp.status_code == 401:
-            log_test("J3", "User token cannot access /admin/* endpoints", "PASS")
-        else:
-            log_test("J3", "User token cannot access /admin/* endpoints", "FAIL",
-                    f"Status: {resp.status_code}")
-        
-        # J4: Admin token cannot access /auth/me
-        resp = requests.get(f"{BASE_URL}/auth/me",
-                          headers={"Authorization": f"Bearer {master_token}"})
-        
-        if resp.status_code == 401:
-            detail = resp.json().get("detail", "")
-            if "User token required" in detail:
-                log_test("J4", "Admin token cannot access /auth/me", "PASS")
-            else:
-                log_test("J4", "Admin token cannot access /auth/me", "FAIL",
-                        f"Wrong detail: {detail}")
-        else:
-            log_test("J4", "Admin token cannot access /auth/me", "FAIL",
-                    f"Status: {resp.status_code}")
-    else:
-        log_test("J1-J4", "JWT role separation tests", "FAIL",
-                f"Cannot create test user: {resp.status_code}")
+    print("\n✅ TEST 5 PASSED - No auth errors in any response")
 
 
 def main():
-    """Run all test scenarios."""
-    print("\n" + "="*80)
-    print("ESSENTIAL GEMSTONES USER AUTHENTICATION TEST SUITE")
+    """Run all tests."""
     print("="*80)
-    print(f"Base URL: {BASE_URL}")
-    print(f"Test User Email: {TEST_USER_EMAIL}")
+    print("CLAUDE SONNET 4.5 CHAT ENDPOINT VERIFICATION")
+    print("="*80)
+    print(f"Backend URL: {BACKEND_URL}")
+    print(f"Admin Password: {ADMIN_PASSWORD}")
     
     try:
-        test_a_user_registration()
-        test_b_user_login()
-        test_c_auth_me()
-        test_d_update_profile()
-        test_e_favorites()
-        test_f_admin_user_management()
-        test_g_banned_user()
-        test_h_admin_delete_user()
-        test_i_permissions_metadata()
-        test_j_jwt_role_separation()
+        # Run all tests
+        test_1_ask_luca()
+        test_2_stone_guide()
+        test_3_admin_writer()
+        test_4_prompt_voice_rules()
+        test_5_no_auth_errors()
         
         print("\n" + "="*80)
-        print("TEST SUITE COMPLETE")
+        print("🎉 ALL TESTS PASSED!")
         print("="*80)
+        print("\nSUMMARY:")
+        print("✅ Test 1: ask-luca mode returns real reply about bracelet care")
+        print("✅ Test 2: stone-guide mode returns real reply about grounding stones")
+        print("✅ Test 3: admin-writer mode works with admin authentication")
+        print("✅ Test 4: Prompt voice rules enforced (no she/her, no age qualifiers)")
+        print("✅ Test 5: No auth errors in any response")
+        print("\nClaude Sonnet 4.5 integration is working correctly!")
         
+    except AssertionError as e:
+        print(f"\n❌ TEST FAILED: {e}")
+        raise
     except Exception as e:
-        print(f"\n❌ FATAL ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        print(f"\n❌ UNEXPECTED ERROR: {e}")
+        raise
 
 
 if __name__ == "__main__":
