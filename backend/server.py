@@ -22,6 +22,7 @@ from fastapi import (
     File,
     HTTPException,
     Request,
+    Response,
     UploadFile,
     status,
 )
@@ -481,7 +482,11 @@ async def delete_admin(admin_id: str, admin: dict = Depends(require_admin)) -> d
 
 
 @app.get("/api/site")
-async def get_site() -> dict:
+async def get_site(response: Response) -> dict:
+    # Ensure no CDN/proxy caches the site config so admin edits reflect immediately across devices
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
     return await get_site_doc()
 
 
@@ -1371,19 +1376,16 @@ def _extract_json(text: str) -> Optional[dict]:
     if not text:
         return None
     text = text.strip()
+    # Strip markdown code fences ```json ... ``` or ``` ... ```
+    fence = _re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```\s*$", text)
+    if fence:
+        text = fence.group(1).strip()
     # Try raw
     try:
         return _json.loads(text)
     except _json.JSONDecodeError:
         pass
-    # Try fenced markdown ```json ... ```
-    m = _re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
-    if m:
-        try:
-            return _json.loads(m.group(1))
-        except _json.JSONDecodeError:
-            pass
-    # Fallback: first { ... last }
+    # Fallback: greediest first-{ last-}
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
@@ -1538,3 +1540,229 @@ async def ai_edit_undo(payload: AIUndoIn, admin: dict = Depends(require_admin)) 
     update_doc["updatedAt"] = datetime.utcnow().isoformat()
     await db.site.update_one({"_id": "main"}, {"$set": update_doc}, upsert=True)
     return {"ok": True}
+
+
+# ---------------- UNIFIED ADMIN AI (chat + edit + email broadcast) ---------------- #
+
+
+class AdminAIIn(BaseModel):
+    message: str
+    sessionId: Optional[str] = None
+
+
+def _unified_admin_prompt(site_json: str, subscriber_count: int) -> str:
+    schema_keys = list(default_site().keys())
+    return (
+        "You are the SITE OWNER'S personal AI for Essential Gemstones, a handmade lava-stone bracelet brand "
+        "founded by Luca (he/him, nine years old). You act on behalf of the admin. You can hold a normal "
+        "conversation, draft copy, EDIT the live site, or SEND an email broadcast to every newsletter subscriber. "
+        "Choose the ONE action that best fits the admin's request.\n\n"
+        "VOICE: warm, earthy, sincere, plain and grounded. Short sentences. No exclamation-heavy hype, no emojis. "
+        "Never refer to Luca as she/her/they. Never lead descriptions of Luca with his age.\n\n"
+        "OUTPUT FORMAT: Reply with ONLY a single JSON object (no prose outside JSON, no code fences). Exact shape:\n"
+        "{\n"
+        '  "kind": "chat" | "edit" | "email",\n'
+        '  "reply": "<what to show the admin>",\n'
+        '  "edits": [ {"path": "<dotted path>", "value": <new value>} ],\n'
+        '  "email": { "subject": "<subject line>", "html": "<well-formatted HTML body>" }\n'
+        "}\n"
+        "Only include 'edits' when kind='edit'. Only include 'email' when kind='email'. 'reply' is ALWAYS required.\n\n"
+        "WHEN TO PICK EACH kind:\n"
+        "- 'chat'  \u2192 the admin is asking a question, brainstorming, or wants you to draft copy without applying it. "
+        "Put the draft or answer in 'reply'.\n"
+        "- 'edit'  \u2192 the admin wants a live change to the website (hero, products, FAQ, colors of copy, section order, "
+        "visibility, footer, etc.). Fill 'edits' with MINIMAL, TARGETED paths and put a one-sentence summary in 'reply'.\n"
+        "- 'email' \u2192 the admin wants a message sent to newsletter subscribers "
+        f"(current subscriber count: {subscriber_count}). "
+        "Write a real, warm HTML email in 'email.html' using inline styles suitable for email clients. Put a short "
+        "confirmation in 'reply' like: 'Ready to send to your subscribers. Say \"send it\" to confirm.' "
+        "IMPORTANT: Only pick kind='email' when the admin's message clearly says they want to email/broadcast/send-a-newsletter to subscribers.\n\n"
+        "EDIT PATH SYNTAX:\n"
+        "- Dot notation to descend into objects. Bracket [n] to select an array index. "
+        "Example: products.items[0].description, sectionVisibility.faq, sectionOrder.\n"
+        "- To replace an entire array, set path to the array key and value to the new array.\n"
+        f"- Top-level keys you may edit: {schema_keys}.\n\n"
+        "RULES:\n"
+        "- Do EXACTLY what the admin asked \u2014 no more, no less. Do not rewrite unrelated fields.\n"
+        "- Preserve existing structure. Do not remove keys the site uses. Never invent fields the schema doesn't have.\n"
+        "- If the request is unsafe/impossible, set kind='chat' and explain in 'reply'.\n\n"
+        "CURRENT SITE CONTENT (JSON):\n" + site_json
+    )
+
+
+@app.post("/api/admin/ai")
+async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = Depends(require_admin)) -> dict:
+    """Single all-powerful admin AI. Auto-decides chat vs edit vs email broadcast."""
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=503, detail="AI is not configured")
+    text = (payload.message or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty message")
+    if len(text) > 6000:
+        raise HTTPException(status_code=400, detail="Message too long")
+
+    site = await get_site_doc()
+    subscribers_count = await db.subscribers.count_documents({})
+    snapshot = _copy.deepcopy(site)
+    site_json = _json.dumps(site, ensure_ascii=False)
+    system_prompt = _unified_admin_prompt(site_json, subscribers_count)
+
+    # Session memory: reuse chat_sessions collection with mode 'admin-writer'
+    now_iso = datetime.utcnow().isoformat()
+    user_key = f"admin:{admin.get('sub')}"
+    session_id = payload.sessionId or str(uuid.uuid4())
+    session_doc = await db.chat_sessions.find_one({"_id": session_id})
+    if session_doc is None:
+        session_doc = {
+            "_id": session_id,
+            "mode": "admin-writer",
+            "userId": user_key,
+            "userKey": user_key,
+            "title": _fallback_title_from(text),
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+            "messages": [],
+            "meta": {},
+        }
+        await db.chat_sessions.insert_one(session_doc)
+    else:
+        owner = session_doc.get("userKey")
+        if owner and owner != user_key:
+            raise HTTPException(status_code=403, detail="This chat belongs to another admin.")
+
+    prior = session_doc.get("messages") or []
+
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=session_id,
+        system_message=system_prompt,
+    ).with_model(CHAT_PROVIDER, CHAT_MODEL)
+
+    # Warm up prior history in the model (best-effort)
+    try:
+        for m in prior[-20:]:
+            if m.get("role") == "user":
+                async for _ev in chat.stream_message(UserMessage(text=m.get("content", ""))):
+                    if isinstance(_ev, StreamDone):
+                        break
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("admin-ai history replay failed: %s", exc)
+
+    try:
+        reply_raw = await chat.send_message(UserMessage(text=text))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"AI request failed: {exc}")
+
+    parsed = _extract_json(reply_raw) or {}
+    kind = str(parsed.get("kind") or "chat").lower().strip()
+    reply_text = str(parsed.get("reply") or "").strip() or (reply_raw[:800] if reply_raw else "")
+
+    result: dict[str, Any] = {
+        "sessionId": session_id,
+        "kind": kind,
+        "reply": reply_text,
+        "applied": [],
+        "failed": [],
+        "snapshot": None,
+        "emailSent": False,
+        "emailStats": None,
+    }
+
+    # --- Handle EDIT ---
+    if kind == "edit":
+        edits = parsed.get("edits") or []
+        if not isinstance(edits, list):
+            edits = []
+        applied: list[dict] = []
+        failed: list[dict] = []
+        updated = _copy.deepcopy(site)
+        allowed = set(default_site().keys())
+        for e in edits:
+            if not isinstance(e, dict):
+                failed.append({"edit": e, "reason": "not an object"})
+                continue
+            path = str(e.get("path") or "").strip()
+            if not path:
+                failed.append({"edit": e, "reason": "missing path"})
+                continue
+            top = path.split(".")[0].split("[")[0]
+            if top not in allowed:
+                failed.append({"edit": e, "reason": f"top-level key '{top}' not editable"})
+                continue
+            try:
+                _set_at_path(updated, path, e.get("value"))
+                applied.append({"path": path, "value": e.get("value")})
+            except Exception as exc:  # noqa: BLE001
+                failed.append({"edit": e, "reason": str(exc)})
+        if applied:
+            update_doc = {k: v for k, v in updated.items() if k in allowed}
+            update_doc["updatedAt"] = datetime.utcnow().isoformat()
+            await db.site.update_one({"_id": "main"}, {"$set": update_doc}, upsert=True)
+        result["applied"] = applied
+        result["failed"] = failed
+        result["snapshot"] = snapshot
+        if not reply_text:
+            result["reply"] = f"Applied {len(applied)} change(s)." if applied else "No changes applied."
+
+    # --- Handle EMAIL BROADCAST ---
+    elif kind == "email":
+        email_obj = parsed.get("email") or {}
+        subject = str(email_obj.get("subject") or "").strip()
+        html = str(email_obj.get("html") or "").strip()
+        if not subject or not html:
+            result["kind"] = "chat"
+            result["reply"] = (reply_text or "") + "\n\n(I didn't have a subject/body ready \u2014 tell me what to say and I'll draft it.)"
+        else:
+            # Draft-only: return the draft; admin confirms via /api/admin/ai/email/send
+            result["emailDraft"] = {"subject": subject, "html": html, "recipientCount": subscribers_count}
+            if not reply_text:
+                result["reply"] = f"Draft is ready \u2014 preview below. Say 'send it' to broadcast to {subscribers_count} subscriber(s)."
+
+    # --- Persist chat memory ---
+    try:
+        new_messages = prior + [
+            {"role": "user", "content": text, "at": now_iso},
+            {"role": "assistant", "content": reply_text or "(no reply)", "at": datetime.utcnow().isoformat(), "kind": kind},
+        ]
+        await db.chat_sessions.update_one(
+            {"_id": session_id},
+            {"$set": {"messages": new_messages, "updatedAt": datetime.utcnow().isoformat()}},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("admin-ai persist failed: %s", exc)
+
+    return result
+
+
+class AdminBroadcastIn(BaseModel):
+    subject: str
+    html: str
+
+
+@app.post("/api/admin/ai/email/send")
+async def admin_ai_send_broadcast(payload: AdminBroadcastIn, admin: dict = Depends(require_admin)) -> dict:
+    """Confirm & send an admin-AI-drafted broadcast to every newsletter subscriber."""
+    subject = (payload.subject or "").strip()
+    html = (payload.html or "").strip()
+    if not subject or not html:
+        raise HTTPException(status_code=400, detail="Subject and body are required.")
+    subs: list[str] = []
+    async for doc in db.subscribers.find():
+        e = (doc.get("email") or "").strip().lower()
+        if e:
+            subs.append(e)
+    if not subs:
+        return {"ok": True, "sent": 0, "failed": 0, "message": "No subscribers to send to."}
+
+    sent = 0
+    failed = 0
+    errors: list[str] = []
+    for addr in subs:
+        try:
+            await send_email(addr, subject, html)
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            if len(errors) < 5:
+                errors.append(f"{addr}: {exc}")
+    return {"ok": True, "sent": sent, "failed": failed, "totalSubscribers": len(subs), "errors": errors}

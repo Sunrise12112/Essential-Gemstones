@@ -1,0 +1,47 @@
+{
+  "summary": "Verified unified admin AI (chat/edit/email), no-store cache headers on GET /api/site, email broadcast send, session memory, undo, and hero video play/pause. Backend 8/8 pytest cases pass. Frontend: AI panel is unified (no tabs), all data-testids present (admin-ai-panel/input/send/close/history/new/msg-i/undo-i/use-i/send-email-i), chat shows REPLY badge + Copy, edit shows SITE EDIT badge + Undo + dispatches eg:ai-edit → global ai-undo-banner appears with ai-undo-banner-btn and ai-undo-banner-dismiss, email shows EMAIL DRAFT badge + subject + HTML preview + 'Send to N subscribers' button that triggers /admin/ai/email/send. Hero: hero-video-playpause + hero-video-mute + hero-video-unmute appear after user taps for sound; playpause toggles video.paused correctly and swaps aria-label.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/ai", "issue": "Returns 401 'Not an admin token' for a valid member JWT. Review spec expected 403 (authenticated but not authorized). Endpoint is still secure — non-admin traffic is rejected — but the semantic status code is off."},
+      {"endpoint": "POST /api/admin/ai (kind classification)", "issue": "LLM occasionally classifies email-drafting prompts as kind='chat' instead of 'email' when the phrasing is 'Draft an email...' (~30% variance). Explicit 'Send/broadcast an email newsletter to my subscribers' language classifies reliably as 'email'. Retry-once handles it in tests. Consider strengthening the system prompt example row for the 'Draft an email' phrasing so the LLM picks kind='email' consistently — or falling back to a secondary intent-classification pass when 'reply' contains subject/body markers."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SignupPrompt", "issue": "Non-member SignupPrompt modal ('Become an Essential member') appears on /admin/dashboard after ~10s because SignupPrompt only checks member user context and doesn't consider the admin token. Distracting during admin use. Suppress on /admin routes or when localStorage.eg_admin_token exists.", "selector": "/app/frontend/src/components/auth/SignupPrompt.jsx", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin AI email draft preview", "issues": ["Preview is rendered as inline HTML inside a bordered container (not sandboxed <iframe>). If the AI ever emits <script>/style leakage in email HTML, it could affect the admin dashboard. Consider sandboxing the preview via srcDoc <iframe>."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_admin_ai_unified.py",
+    "/app/backend/tests/test_chat_auth.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Return 403 (not 401) from /api/admin/ai and other admin-only endpoints when a valid member JWT is provided; 401 semantically means unauthenticated. Current implementation is safe but off-spec.",
+    "OPTIONAL: Suppress SignupPrompt when eg_admin_token is set OR when on /admin/* routes.",
+    "OPTIONAL: Tighten unified admin AI prompt so 'Draft an email to my subscribers' reliably yields kind='email' (add an explicit few-shot example).",
+    "OPTIONAL: Sandbox email HTML preview inside <iframe srcDoc>."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~1770 lines — really should split into modules (auth, users, chat, admin, ai_edit, admin_ai_unified, email). Growing monolith.",
+    "Unified admin AI 'history replay' loop (lines ~1641-1649) issues streaming calls for every prior user message on every new turn. For a 20-turn conversation, that's 20 extra Anthropic calls per user turn. Consider using the standard system_message + turns array or persisting model-side session state.",
+    "_extract_json falls back to text.find('{')...text.rfind('}') — if the LLM emits a very long HTML body inside code fences and the response is truncated mid-JSON, parsing silently returns None and the caller downgrades to kind='chat' with the raw text as reply (seen intermittently in tests). Consider surfacing a warning log when parsing fails and either retrying with a stricter output prompt or returning a structured 'AI output malformed' error.",
+    "AdminDashboard's undoLastAiEdit calls /admin/ai-edit/undo but the unified endpoint /api/admin/ai kind='edit' also produces a snapshot — verify both flows share the same snapshot shape. They do (snapshot is deepcopy of site).",
+    "AIWriter.jsx onInsert path may go stale if the parent (Section field) is unmounted; consider guarding with a ref."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin_ai_unified.py (new)"
+  ],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% of spec'd flows verified"},
+  "test_credentials": "Admin master password '1121211221' (from /app/memory/test_credentials.md). Test users are registered via /api/auth/register with TEST_ email prefix and body {email, password, fullName}.",
+  "seed_data_creation": "TestBroadcastSend seeds one subscriber testbroadcast+<uuid>@example.com via POST /api/subscribe, runs broadcast, then finds it via GET /api/admin/subscribers and deletes it via DELETE /api/admin/subscribers/{id}. TestAdminAIEdit reverts its own hero.kicker change via /api/admin/ai-edit/undo. TEST_ admai_* users remain in db.users (register endpoint has no test-user cleanup route).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend pytest for unified admin AI is at /app/backend/tests/test_admin_ai_unified.py (8 tests). Register endpoint field name is 'fullName' (not 'name'). Admin login body is {password} (no username) for master. AIWriter dispatches window.CustomEvent('eg:ai-edit', {detail: {summary, applied, snapshot}}) on every successful edit, and 'eg:ai-edit-undone' on undo — AdminDashboard listens. If retesting frontend flows, always call `localStorage.setItem('eg_signup_prompt_dismissed','1')` before the ~10s SignupPrompt fires on /admin/dashboard, otherwise it overlays other UI. LLM email intent classification is inconsistent for 'Draft an email...' phrasing — use 'Send an email newsletter/broadcast to my subscribers announcing X' for reliable kind='email'.",
+  "rca_of_the_issue": "Feature complete and working end-to-end. Only intermittent finding is LLM output variance where (a) 'Draft an email...' sometimes gets classified as chat instead of email (fixable via better prompt few-shots), and (b) very long HTML email bodies in JSON responses occasionally truncate/malform, causing _extract_json to return None and downgrading to chat kind (retry-once passes)."
+}

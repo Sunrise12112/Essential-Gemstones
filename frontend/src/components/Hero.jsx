@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowDown, Volume2, VolumeX } from 'lucide-react';
+import { ArrowDown, Volume2, VolumeX, Play, Pause } from 'lucide-react';
 import { useSite } from '../context/SiteContext';
 import { resolveMediaUrl } from '../lib/api';
 
@@ -10,11 +10,13 @@ export default function Hero() {
   const isVideo = h.mediaType === 'video';
   const videoRef = useRef(null);
   const [muted, setMuted] = useState(true);
+  const [playing, setPlaying] = useState(true);
   const [showHint, setShowHint] = useState(true);
 
   // If someone uploads a new video, reset the mute state so autoplay works
   useEffect(() => {
     setMuted(true);
+    setPlaying(true);
     setShowHint(true);
   }, [mediaUrl, isVideo]);
 
@@ -27,6 +29,7 @@ export default function Hero() {
     setShowHint(false);
     try {
       await v.play();
+      setPlaying(true);
     } catch (err) {
       // If the browser blocks playback with sound, fall back to muted playback
       v.muted = true;
@@ -44,6 +47,21 @@ export default function Hero() {
     } else {
       v.muted = true;
       setMuted(true);
+    }
+  };
+
+  const togglePlay = async (e) => {
+    e?.stopPropagation?.();
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) {
+      try {
+        await v.play();
+        setPlaying(true);
+      } catch (err) { /* ignore */ }
+    } else {
+      v.pause();
+      setPlaying(false);
     }
   };
 
@@ -95,27 +113,40 @@ export default function Hero() {
                   playsInline
                 />
                 <div className="absolute inset-0 bg-gradient-to-b from-[#1a1410]/20 via-transparent to-[#1a1410]/40 pointer-events-none"></div>
-                {/* Small persistent mute toggle (only after sound is enabled) */}
-                {!muted && (
-                  <button
-                    type="button"
-                    onClick={toggleMute}
-                    aria-label="Mute video"
-                    className="absolute bottom-5 right-5 z-30 w-11 h-11 rounded-full bg-[#1a1410]/70 hover:bg-[#1a1410]/90 backdrop-blur text-[#faf6f0] flex items-center justify-center transition-colors"
-                  >
-                    <Volume2 className="w-5 h-5" />
-                  </button>
-                )}
-                {/* When hint is dismissed but still muted, show a small unmute chip */}
-                {muted && !showHint && (
-                  <button
-                    type="button"
-                    onClick={enableSound}
-                    aria-label="Unmute video"
-                    className="absolute bottom-5 right-5 z-30 w-11 h-11 rounded-full bg-[#1a1410]/70 hover:bg-[#1a1410]/90 backdrop-blur text-[#faf6f0] flex items-center justify-center transition-colors"
-                  >
-                    <VolumeX className="w-5 h-5" />
-                  </button>
+                {/* Persistent play/pause + mute controls (only after user interacts) */}
+                {!(muted && showHint) && (
+                  <div className="absolute bottom-5 right-5 z-30 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={togglePlay}
+                      aria-label={playing ? 'Pause video' : 'Play video'}
+                      data-testid="hero-video-playpause"
+                      className="w-11 h-11 rounded-full bg-[#1a1410]/70 hover:bg-[#1a1410]/90 backdrop-blur text-[#faf6f0] flex items-center justify-center transition-colors"
+                    >
+                      {playing ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 translate-x-[1px]" />}
+                    </button>
+                    {!muted ? (
+                      <button
+                        type="button"
+                        onClick={toggleMute}
+                        aria-label="Mute video"
+                        data-testid="hero-video-mute"
+                        className="w-11 h-11 rounded-full bg-[#1a1410]/70 hover:bg-[#1a1410]/90 backdrop-blur text-[#faf6f0] flex items-center justify-center transition-colors"
+                      >
+                        <Volume2 className="w-5 h-5" />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={enableSound}
+                        aria-label="Unmute video"
+                        data-testid="hero-video-unmute"
+                        className="w-11 h-11 rounded-full bg-[#1a1410]/70 hover:bg-[#1a1410]/90 backdrop-blur text-[#faf6f0] flex items-center justify-center transition-colors"
+                      >
+                        <VolumeX className="w-5 h-5" />
+                      </button>
+                    )}
+                  </div>
                 )}
               </>
             ) : (

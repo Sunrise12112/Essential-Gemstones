@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { LogOut, Save, Eye, RefreshCw, ChevronUp, ChevronDown, Users, ShieldCheck, Sparkles } from 'lucide-react';
+import { LogOut, Save, Eye, RefreshCw, ChevronUp, ChevronDown, Users, ShieldCheck, Sparkles, Undo2, X } from 'lucide-react';
 import api from '../lib/api';
 import { useSite } from '../context/SiteContext';
 import { useToast } from '../hooks/use-toast';
@@ -36,6 +36,34 @@ export default function AdminDashboard() {
   const [saving, setSaving] = useState(false);
   const [me, setMe] = useState(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [lastAiEdit, setLastAiEdit] = useState(null); // { summary, applied, snapshot, at }
+  const [undoing, setUndoing] = useState(false);
+
+  useEffect(() => {
+    const onEdit = (e) => setLastAiEdit(e.detail || null);
+    const onUndone = () => setLastAiEdit(null);
+    window.addEventListener('eg:ai-edit', onEdit);
+    window.addEventListener('eg:ai-edit-undone', onUndone);
+    return () => {
+      window.removeEventListener('eg:ai-edit', onEdit);
+      window.removeEventListener('eg:ai-edit-undone', onUndone);
+    };
+  }, []);
+
+  const undoLastAiEdit = async () => {
+    if (!lastAiEdit?.snapshot) return;
+    setUndoing(true);
+    try {
+      await api.post('/admin/ai-edit/undo', { snapshot: lastAiEdit.snapshot });
+      await refresh();
+      setLastAiEdit(null);
+      toast({ title: 'Reverted', description: 'Site restored to the previous version.' });
+    } catch (err) {
+      toast({ title: 'Undo failed', description: err?.response?.data?.detail || 'Try again.', variant: 'destructive' });
+    } finally {
+      setUndoing(false);
+    }
+  };
 
   useEffect(() => {
     if (!localStorage.getItem('eg_admin_token')) {
@@ -128,6 +156,31 @@ export default function AdminDashboard() {
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-10 space-y-4">
+        {/* Global "undo last AI edit" banner */}
+        {lastAiEdit && lastAiEdit.snapshot && (
+          <div data-testid="ai-undo-banner" className="sticky top-[76px] z-30 flex items-center justify-between gap-4 bg-[#1a1410] border border-[#c9a876]/40 text-[#faf6f0] rounded-2xl px-5 py-3 shadow-xl animate-in slide-in-from-top-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="w-8 h-8 rounded-full bg-[#c9a876]/20 flex items-center justify-center shrink-0"><Sparkles className="w-4 h-4 text-[#c9a876]" /></span>
+              <div className="min-w-0">
+                <p className="text-xs tracking-[0.2em] uppercase text-[#c9a876]">AI just edited your site</p>
+                <p className="text-sm text-[#faf6f0] truncate">{lastAiEdit.summary || `${(lastAiEdit.applied || []).length} change(s) applied.`}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={undoLastAiEdit}
+                disabled={undoing}
+                data-testid="ai-undo-banner-btn"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#c9a876] text-[#1a1410] text-sm font-medium hover:bg-[#d6b885] disabled:opacity-60">
+                {undoing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Undo2 className="w-4 h-4" />} Undo
+              </button>
+              <button onClick={() => setLastAiEdit(null)} aria-label="Dismiss" data-testid="ai-undo-banner-dismiss" className="w-8 h-8 rounded-full hover:bg-[#241b15] flex items-center justify-center">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Section ordering */}
         {can('sectionOrder') && (
         <SectionCard title="Section Order & Visibility" open={openSections.order} onToggle={() => toggle('order')}>
