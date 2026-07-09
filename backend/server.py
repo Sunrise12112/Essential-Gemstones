@@ -2366,6 +2366,25 @@ class AdminAIIn(BaseModel):
     sessionId: Optional[str] = None
 
 
+def _generate_strong_password(length: int = 14) -> str:
+    """Return a password that is GUARANTEED to satisfy validate_password_strength."""
+    upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"  # no I, O
+    lower = "abcdefghijkmnpqrstuvwxyz"  # no l, o
+    digits = "23456789"                  # no 0, 1
+    symbols = "!@#$%^&*"
+    all_chars = upper + lower + digits + symbols
+    rng = _secrets.SystemRandom()
+    chars = [
+        rng.choice(upper),
+        rng.choice(lower),
+        rng.choice(digits),
+        rng.choice(symbols),
+    ]
+    chars += [rng.choice(all_chars) for _ in range(max(0, length - 4))]
+    rng.shuffle(chars)
+    return "".join(chars)
+
+
 async def _apply_admin_action(action_obj: dict, caller: dict) -> dict:
     """Execute an admin-management action requested by the Admin AI.
     Only reachable when the caller is a super admin (checked in the endpoint).
@@ -2396,9 +2415,7 @@ async def _apply_admin_action(action_obj: dict, caller: dict) -> dict:
         if not email or "@" not in email:
             return {"ok": False, "error": "a valid email is required to create an admin"}
         if not password:
-            # generate a strong one
-            alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
-            password = "".join(_secrets.choice(alphabet) for _ in range(14)) + "!"
+            password = _generate_strong_password()
             generated = True
         try:
             validate_password_strength(password)
@@ -2486,8 +2503,7 @@ async def _apply_admin_action(action_obj: dict, caller: dict) -> dict:
         password = str(action_obj.get("password") or "").strip()
         generated = False
         if not password:
-            alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
-            password = "".join(_secrets.choice(alphabet) for _ in range(14)) + "!"
+            password = _generate_strong_password()
             generated = True
         try:
             validate_password_strength(password)

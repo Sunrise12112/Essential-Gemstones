@@ -74,6 +74,17 @@ Root causes + fixes:
 Testing: iteration_4 (backend 5/5), iteration_5 (frontend race repro 1/1 PASS). Regression tests in `/app/backend/tests/test_site_and_uploads.py`.
 NOTE: User must REDEPLOY to production for these fixes to take effect; hero video must be re-uploaded once on production (old file was lost from ephemeral disk).
 
+## 2026-07-09 (2) — Email required for admins + Admin AI can manage admins
+User asked: (1) email is required when creating a new admin, (2) super admins can edit any admin's email, (3) the Admin AI can create/edit/delete/reset admins (super-admin only).
+Delivered:
+1. `AdminCreate.email` is now `EmailStr` (required). POST `/api/admin/admins` rejects missing/invalid emails and duplicates.
+2. PUT `/api/admin/admins/{id}` validates email format and duplicates; super admins can edit anyone's email, others can only edit their own.
+3. AdminsManager UI: required email input on create form; pencil-icon inline edit for email on every row.
+4. Admin AI (`POST /api/admin/ai`) now supports `kind:"admins"` with a full `_apply_admin_action` dispatcher: `create` / `update` / `delete` / `resetPassword` / `reset2fa`. Restricted to super admins — non-super callers get a chat fallback.
+5. When the AI is asked to create an admin without a password, a strong 14-char password is auto-generated and returned in `adminAction.generatedPassword` so the super admin can share it once. Generator is guaranteed to satisfy the password policy (fixed after testing agent found ~11% failure rate on first pass).
+6. AIWriter component renders the new admin-action result card (target admin details + temporary-password banner). AdminsManager auto-refreshes on `eg:admin-managed` window event.
+Backend testing: **24/24 pytests pass**, previously flaky password-generator test now 5/5 passes after fix (`/app/backend/tests/test_admin_management.py`, iteration_7.json).
+
 ## 2026-07-09 — Alternative 2FA methods for admin login
 User asked for more 2FA options besides an authenticator app.
 Delivered:
