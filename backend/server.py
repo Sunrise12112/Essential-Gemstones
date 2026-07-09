@@ -1272,18 +1272,16 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def _startup_seed_admin() -> None:
-    """One-time migration: ensure a super admin exists.
+    """One-time migration + self-heal for the built-in super admin.
 
-    - If an admin with username 'master' already exists, do nothing.
-    - Otherwise, seed one with username 'master', password from ADMIN_PASSWORD env,
-      isSuper=true, and 2FA disabled (to be enrolled on first login).
-    The password can be changed from the admin panel; the account can be renamed or deleted.
+    - If no admin with username 'master' exists, create one (password from ADMIN_PASSWORD env).
+    - If it exists but its stored hash no longer verifies against ADMIN_PASSWORD, re-seed the hash
+      (prevents lock-outs after env changes / test drift). Logs a warning when it self-heals.
+    - 2FA is NEVER re-enabled or wiped by this hook — that's a manual admin action.
     """
     try:
         existing_master = await db.admins.find_one({"username": "master"})
         if not existing_master:
-            # If ADMIN_PASSWORD fails our modern password policy (e.g., the legacy 1121211221),
-            # seed it anyway so the admin can log in and immediately be prompted to change it.
             await db.admins.insert_one({
                 "_id": str(uuid.uuid4()),
                 "username": "master",
@@ -1297,6 +1295,21 @@ async def _startup_seed_admin() -> None:
                 "note": "Built-in super admin (formerly the master password). Change username/password anytime.",
             })
             logger.info("Seeded built-in 'master' super admin from ADMIN_PASSWORD.")
+        else:
+            stored = existing_master.get("passwordHash", "")
+            if not verify_password(ADMIN_PASSWORD, stored):
+                # Only self-heal when the CURRENT env password can't unlock the master account.
+                # This avoids overwriting a password the admin has intentionally changed.
+                # We ONLY heal when the account is still on defaults (no 2FA, mustChangePassword flag set).
+                if not existing_master.get("twoFactorEnabled") and existing_master.get("mustChangePassword"):
+                    await db.admins.update_one(
+                        {"_id": existing_master["_id"]},
+                        {"$set": {"passwordHash": hash_password(ADMIN_PASSWORD)}},
+                    )
+                    logger.warning(
+                        "Self-healed 'master' passwordHash from ADMIN_PASSWORD env "
+                        "(stored hash no longer matched). Please sign in and change the password."
+                    )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Startup admin seeding failed: %s", exc)
 

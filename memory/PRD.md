@@ -31,6 +31,15 @@ Recreate essentialgemstones.com pixel-perfectly with an artisan, earthy aestheti
   - Hero video now has a **pause/play** button next to the mute toggle (`data-testid='hero-video-playpause'`).
   - SignupPrompt suppressed on `/admin` routes and whenever an admin token exists.
   - Testing: 8/8 backend pytest cases pass, 100% frontend flows verified (`/app/test_reports/iteration_2.json`, tests at `/app/backend/tests/test_admin_ai_unified.py`).
+- 2026-02-09: **Admin 2FA (TOTP + Microsoft Authenticator) + strong password policy + master refactor**:
+  - Legacy master-password-only shortcut removed. The "master" is now a real, editable, super-admin account (seeded on startup from `ADMIN_PASSWORD` env; auto-self-healed if the stored hash drifts, but only while defaults untouched).
+  - All admin logins now go through the admins collection: `POST /api/admin/login` returns one of `{status: 'needs_2fa_setup', setupToken}` (first login) or `{status: 'needs_2fa', twoFactorToken}` (2FA enrolled).
+  - New endpoints (`pyotp` + `qrcode`): `/admin/2fa/setup` (returns QR data URL + secret + RFC 6238 metadata), `/admin/2fa/enable` (verifies first code, issues real JWT + 10 backup codes), `/admin/2fa/login` (verifies TOTP or one-time backup code, issues real JWT), `/admin/2fa/disable` (self, requires current code), `/admin/2fa/backup-codes` + `/regenerate`, `/admin/2fa/reset/{admin_id}` (super-admin resets another admin's 2FA).
+  - Purpose-scoped JWTs: `setup2fa` and `verify2fa` tokens cannot access real admin routes.
+  - Strong password policy (`validate_password_strength`): min 8 chars, ≥1 uppercase, ≥1 lowercase, ≥1 digit, ≥1 symbol — enforced on `/admin/admins` create, `/admin/admins/{id}` password update, and `/auth/register`. Frontend shows a live `PasswordChecklist` under the new-admin form and blocks weak passwords in the client. `pwdIssues` + `PWD_MSG` helpers exported from `AdminLogin.jsx`.
+  - AdminsManager row now shows a green "2FA on" / amber "2FA pending" badge and a "Reset 2FA" button (super-admin only, hidden for self).
+  - AdminLogin.jsx handles the full 3-step flow: password → QR-code setup wizard + backup-codes screen → OR TOTP challenge — all inside one page.
+  - Testing: 25/25 backend pytest cases pass, 6/6 frontend flows verified (`/app/test_reports/iteration_3.json`, tests at `/app/backend/tests/test_admin_2fa.py`).
 
 ## Key API Endpoints
 - Auth: `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/favorites/{id}`
