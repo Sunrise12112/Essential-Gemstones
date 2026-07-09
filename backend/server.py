@@ -815,18 +815,20 @@ async def admin_2fa_login(payload: TwoFactorLoginIn, request: Request, admin: di
     elif method == "totp":
         verified = _verify_totp(secret, code)
     else:
-        # Auto-detect (backwards compatibility): try TOTP -> email OTP -> backup code
+        # Auto-detect (backwards compatibility): try TOTP -> email OTP (only if one is pending) -> backup code
         if _verify_totp(secret, code):
             verified = True
-        elif await _consume_email_otp(doc["_id"], code):
-            verified = True
         else:
-            idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
-            if idx >= 0:
-                remaining = list(doc.get("twoFactorBackupCodes") or [])
-                remaining.pop(idx)
-                await db.admins.update_one({"_id": doc["_id"]}, {"$set": {"twoFactorBackupCodes": remaining}})
+            has_pending_email_otp = await db.admin_email_otps.find_one({"_id": doc["_id"]}) is not None
+            if has_pending_email_otp and await _consume_email_otp(doc["_id"], code):
                 verified = True
+            else:
+                idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
+                if idx >= 0:
+                    remaining = list(doc.get("twoFactorBackupCodes") or [])
+                    remaining.pop(idx)
+                    await db.admins.update_one({"_id": doc["_id"]}, {"$set": {"twoFactorBackupCodes": remaining}})
+                    verified = True
 
     if not verified:
         raise HTTPException(status_code=401, detail="Invalid code")

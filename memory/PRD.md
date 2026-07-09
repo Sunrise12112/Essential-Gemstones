@@ -74,8 +74,18 @@ Root causes + fixes:
 Testing: iteration_4 (backend 5/5), iteration_5 (frontend race repro 1/1 PASS). Regression tests in `/app/backend/tests/test_site_and_uploads.py`.
 NOTE: User must REDEPLOY to production for these fixes to take effect; hero video must be re-uploaded once on production (old file was lost from ephemeral disk).
 
-### Backlog (unchanged)
+## 2026-07-09 — Alternative 2FA methods for admin login
+User asked for more 2FA options besides an authenticator app.
+Delivered:
+1. **Email OTP as an alternative 2FA method** — 6-digit code sent via existing Gmail SMTP; 10 min TTL; 30 s resend cooldown; max 5 wrong attempts before the code is burned; bcrypt-hashed at rest (`admin_email_otps` collection).
+2. **Method chooser on every login** — after password, admin sees a card with 3 buttons: Authenticator app / Email me a code / Use a backup code. Available methods (`totp`, `email`) are computed from whether the admin has an email set.
+3. **"Trust this device for 30 days"** — checkbox on all three verification screens. When ticked, backend issues a signed 30-day JWT + row in `admin_trusted_devices`; the browser stores it as `eg_admin_trust_token` and sends it on future `/api/admin/login` calls via `X-Admin-Trust-Token` header, which skips 2FA entirely and returns `status:"ok"` immediately.
+4. **Trusted-device management endpoints** — `GET/DELETE /api/admin/trusted-devices` (list / revoke one / revoke all). Also auto-purged when the admin disables 2FA or a super admin resets it.
+Backend testing: 18/18 pytests pass (`/app/backend/tests/test_admin_2fa_alt_methods.py`, iteration_6.json). Frontend: manual smoke screenshot only.
+
+### Backlog (updated)
 - P1: "Regenerate Backup Codes" button in Admin UI (backend endpoint exists)
-- P2: Trusted-device 30-day skip-2FA cookie
-- P2: Refactor server.py (>2200 lines) into routes/models modules
+- P1: "Trusted devices" list + revoke buttons in Admin UI (backend endpoints exist as of 2026-07-09; frontend page still to build)
+- P2: Media Library in the admin panel (list/reuse/delete Object Storage files)
+- P2: Refactor `server.py` (>2500 lines) into modular routers (auth, admin_2fa, admin_trusted_devices, cms, chat)
 - P3: Retry-with-backoff on object storage GET (occasional 5xx)
