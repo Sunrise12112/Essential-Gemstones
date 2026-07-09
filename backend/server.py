@@ -43,10 +43,22 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 
+import io as _io
+import base64 as _base64
+import re as _pw_re
+import secrets as _secrets
+
+import pyotp
+import qrcode as _qrcode
+
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "1121211221")
 JWT_SECRET = os.environ.get("JWT_SECRET", "change-me")
 JWT_ALG = "HS256"
 JWT_DAYS = 30
+TOTP_ISSUER = "Essential Gemstones Admin"
+BACKUP_CODE_COUNT = 10
+TWO_FA_CHALLENGE_MINUTES = 5
+SETUP_TOKEN_MINUTES = 30
 
 SECTION_PERMS = [
     "navbar", "hero", "products", "story", "promise", "chakra", "stats",
@@ -79,12 +91,14 @@ class LoginIn(BaseModel):
 class AdminCreate(BaseModel):
     username: str
     password: str
+    email: Optional[str] = None
     permissions: list[str] = []
     isSuper: bool = False
 
 
 class AdminUpdate(BaseModel):
     password: Optional[str] = None
+    email: Optional[str] = None
     permissions: Optional[list[str]] = None
     isSuper: Optional[bool] = None
 
@@ -100,6 +114,75 @@ def verify_password(pw: str, hashed: str) -> bool:
         return False
 
 
+PASSWORD_POLICY_MESSAGE = (
+    "Password must be at least 8 characters and include an uppercase letter, "
+    "a lowercase letter, a number, and a symbol."
+)
+
+
+def validate_password_strength(pw: str) -> None:
+    """Raise HTTPException 400 if the password doesn't meet policy."""
+    if not pw or len(pw) < 8:
+        raise HTTPException(status_code=400, detail=PASSWORD_POLICY_MESSAGE)
+    if not _pw_re.search(r"[A-Z]", pw):
+        raise HTTPException(status_code=400, detail=PASSWORD_POLICY_MESSAGE)
+    if not _pw_re.search(r"[a-z]", pw):
+        raise HTTPException(status_code=400, detail=PASSWORD_POLICY_MESSAGE)
+    if not _pw_re.search(r"[0-9]", pw):
+        raise HTTPException(status_code=400, detail=PASSWORD_POLICY_MESSAGE)
+    if not _pw_re.search(r"[^A-Za-z0-9]", pw):
+        raise HTTPException(status_code=400, detail=PASSWORD_POLICY_MESSAGE)
+
+
+# ---------------- TOTP / 2FA HELPERS ---------------- #
+
+
+def _new_totp_secret() -> str:
+    return pyotp.random_base32()
+
+
+def _totp_provisioning_uri(username: str, secret: str) -> str:
+    return pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name=TOTP_ISSUER)
+
+
+def _totp_qr_data_url(uri: str) -> str:
+    img = _qrcode.make(uri)
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    return "data:image/png;base64," + _base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _verify_totp(secret: str, code: str) -> bool:
+    if not secret or not code:
+        return False
+    code = code.replace(" ", "").strip()
+    if not code.isdigit() or len(code) != 6:
+        return False
+    return pyotp.TOTP(secret).verify(code, valid_window=1)
+
+
+def _new_backup_codes() -> list[str]:
+    # 10 codes formatted as XXXX-XXXX using URL-safe alphanumerics
+    codes = []
+    for _ in range(BACKUP_CODE_COUNT):
+        raw = _secrets.token_hex(4).upper()  # 8 hex chars
+        codes.append(f"{raw[:4]}-{raw[4:]}")
+    return codes
+
+
+def _hash_backup_codes(codes: list[str]) -> list[str]:
+    return [hash_password(c.replace("-", "").upper()) for c in codes]
+
+
+def _match_backup_code(input_code: str, hashed_list: list[str]) -> int:
+    """Return the index of the matching hashed backup code, or -1."""
+    norm = (input_code or "").replace("-", "").upper().strip()
+    for i, h in enumerate(hashed_list or []):
+        if verify_password(norm, h):
+            return i
+    return -1
+
+
 def make_token(sub: str, is_super: bool, permissions: list[str], username: str, role: str = "admin") -> str:
     payload = {
         "sub": sub,
@@ -107,8 +190,33 @@ def make_token(sub: str, is_super: bool, permissions: list[str], username: str, 
         "role": role,
         "isSuper": is_super,
         "permissions": permissions,
+        "purpose": "full",
         "iat": int(datetime.utcnow().timestamp()),
         "exp": int((datetime.utcnow() + timedelta(days=JWT_DAYS)).timestamp()),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+def make_2fa_challenge_token(admin_id: str, username: str) -> str:
+    payload = {
+        "sub": admin_id,
+        "username": username,
+        "role": "admin",
+        "purpose": "verify2fa",
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int((datetime.utcnow() + timedelta(minutes=TWO_FA_CHALLENGE_MINUTES)).timestamp()),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+def make_2fa_setup_token(admin_id: str, username: str) -> str:
+    payload = {
+        "sub": admin_id,
+        "username": username,
+        "role": "admin",
+        "purpose": "setup2fa",
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int((datetime.utcnow() + timedelta(minutes=SETUP_TOKEN_MINUTES)).timestamp()),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
@@ -143,6 +251,33 @@ async def require_admin(
     # Reject explicit user tokens; legacy admin tokens without role are still accepted.
     if payload.get("role") == "user":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not an admin token")
+    # Only full-purpose admin tokens can access general admin endpoints.
+    purpose = payload.get("purpose")
+    if purpose and purpose != "full":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This session is limited to 2FA setup. Finish enrollment first.",
+        )
+    return payload
+
+
+async def require_setup_2fa(
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> dict:
+    payload = _decode_token(creds)
+    if payload.get("role") != "admin":
+        raise HTTPException(status_code=401, detail="Admin token required")
+    if payload.get("purpose") not in ("setup2fa", "full"):
+        raise HTTPException(status_code=401, detail="This session cannot enroll 2FA")
+    return payload
+
+
+async def require_challenge_2fa(
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> dict:
+    payload = _decode_token(creds)
+    if payload.get("role") != "admin" or payload.get("purpose") != "verify2fa":
+        raise HTTPException(status_code=401, detail="Invalid 2FA challenge token")
     return payload
 
 
@@ -170,8 +305,10 @@ def doc_to_admin(doc: dict) -> dict:
     return {
         "id": doc["_id"],
         "username": doc["username"],
+        "email": doc.get("email"),
         "permissions": doc.get("permissions", []),
         "isSuper": bool(doc.get("isSuper")),
+        "twoFactorEnabled": bool(doc.get("twoFactorEnabled")),
         "createdAt": doc.get("createdAt"),
     }
 
@@ -373,31 +510,219 @@ async def root() -> dict:
 
 @app.post("/api/admin/login")
 async def admin_login(data: LoginIn) -> dict:
-    # Username + password: lookup in admins collection
-    if data.username:
-        doc = await db.admins.find_one({"username": data.username.lower().strip()})
-        if not doc or not verify_password(data.password, doc.get("passwordHash", "")):
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        token = make_token(
-            sub=doc["_id"],
-            is_super=bool(doc.get("isSuper")),
-            permissions=doc.get("permissions", []),
-            username=doc["username"],
-        )
-        return {"token": token, "user": doc_to_admin(doc)}
+    # Master password shortcut is removed. All logins go through the admins collection.
+    if not data.username or not data.password:
+        raise HTTPException(status_code=400, detail="Username and password are required.")
+    doc = await db.admins.find_one({"username": data.username.lower().strip()})
+    if not doc or not verify_password(data.password, doc.get("passwordHash", "")):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Legacy: master password (super admin)
-    if data.password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid password")
-    token = make_token(sub="master", is_super=True, permissions=ALL_PERMS, username="master")
+    if doc.get("twoFactorEnabled"):
+        # Password OK, but 2FA is required. Return a short-lived challenge token.
+        return {
+            "status": "needs_2fa",
+            "twoFactorToken": make_2fa_challenge_token(doc["_id"], doc["username"]),
+            "username": doc["username"],
+        }
+
+    # 2FA not yet enrolled — issue a setup-only token so the admin must enroll before doing anything.
     return {
-        "token": token,
-        "user": {"id": "master", "username": "master", "isSuper": True, "permissions": ALL_PERMS},
+        "status": "needs_2fa_setup",
+        "setupToken": make_2fa_setup_token(doc["_id"], doc["username"]),
+        "user": doc_to_admin(doc),
     }
+
+
+# ---- 2FA ENDPOINTS ---- #
+
+
+class TwoFactorVerifyIn(BaseModel):
+    code: str
+
+
+class TwoFactorLoginIn(BaseModel):
+    code: str
+
+
+@app.post("/api/admin/2fa/setup")
+async def admin_2fa_setup(admin: dict = Depends(require_setup_2fa)) -> dict:
+    """Generate (or return existing pending) TOTP secret + provisioning QR code."""
+    doc = await db.admins.find_one({"_id": admin["sub"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    # If 2FA is already enabled, don't hand out the current secret.
+    if doc.get("twoFactorEnabled"):
+        raise HTTPException(status_code=400, detail="2FA is already enabled for this admin.")
+
+    secret = doc.get("twoFactorPendingSecret") or _new_totp_secret()
+    if not doc.get("twoFactorPendingSecret"):
+        await db.admins.update_one({"_id": doc["_id"]}, {"$set": {"twoFactorPendingSecret": secret}})
+
+    uri = _totp_provisioning_uri(f"{TOTP_ISSUER}:{doc['username']}", secret)
+    qr = _totp_qr_data_url(uri)
+    return {
+        "secret": secret,
+        "provisioningUri": uri,
+        "qrDataUrl": qr,
+        "issuer": TOTP_ISSUER,
+        "accountName": doc["username"],
+        "digits": 6,
+        "period": 30,
+        "algorithm": "SHA1",
+    }
+
+
+@app.post("/api/admin/2fa/enable")
+async def admin_2fa_enable(payload: TwoFactorVerifyIn, admin: dict = Depends(require_setup_2fa)) -> dict:
+    """Verify the first 6-digit code from the authenticator app, then enable 2FA and issue a full session."""
+    doc = await db.admins.find_one({"_id": admin["sub"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    if doc.get("twoFactorEnabled"):
+        raise HTTPException(status_code=400, detail="2FA is already enabled.")
+    secret = doc.get("twoFactorPendingSecret")
+    if not secret:
+        raise HTTPException(status_code=400, detail="Call /api/admin/2fa/setup first.")
+    if not _verify_totp(secret, payload.code):
+        raise HTTPException(status_code=401, detail="Invalid code. Try the current 6-digit code from your authenticator.")
+
+    backup_codes = _new_backup_codes()
+    hashed_backups = _hash_backup_codes(backup_codes)
+    await db.admins.update_one(
+        {"_id": doc["_id"]},
+        {
+            "$set": {
+                "twoFactorSecret": secret,
+                "twoFactorEnabled": True,
+                "twoFactorBackupCodes": hashed_backups,
+                "twoFactorEnabledAt": datetime.utcnow().isoformat(),
+            },
+            "$unset": {"twoFactorPendingSecret": ""},
+        },
+    )
+    fresh = await db.admins.find_one({"_id": doc["_id"]})
+    token = make_token(
+        sub=fresh["_id"],
+        is_super=bool(fresh.get("isSuper")),
+        permissions=fresh.get("permissions", []),
+        username=fresh["username"],
+    )
+    return {
+        "ok": True,
+        "backupCodes": backup_codes,
+        "token": token,
+        "user": doc_to_admin(fresh),
+    }
+
+
+@app.post("/api/admin/2fa/login")
+async def admin_2fa_login(payload: TwoFactorLoginIn, admin: dict = Depends(require_challenge_2fa)) -> dict:
+    """Second step of login: verify TOTP (or one-time backup code) and return the real admin JWT."""
+    doc = await db.admins.find_one({"_id": admin["sub"]})
+    if not doc or not doc.get("twoFactorEnabled"):
+        raise HTTPException(status_code=400, detail="2FA is not enabled for this admin.")
+    code = (payload.code or "").strip()
+    secret = doc.get("twoFactorSecret") or ""
+
+    if _verify_totp(secret, code):
+        pass  # OK
+    else:
+        # Try backup codes
+        idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
+        if idx < 0:
+            raise HTTPException(status_code=401, detail="Invalid code")
+        # Consume the backup code
+        remaining = list(doc.get("twoFactorBackupCodes") or [])
+        remaining.pop(idx)
+        await db.admins.update_one({"_id": doc["_id"]}, {"$set": {"twoFactorBackupCodes": remaining}})
+
+    token = make_token(
+        sub=doc["_id"],
+        is_super=bool(doc.get("isSuper")),
+        permissions=doc.get("permissions", []),
+        username=doc["username"],
+    )
+    return {"ok": True, "token": token, "user": doc_to_admin(doc)}
+
+
+@app.post("/api/admin/2fa/disable")
+async def admin_2fa_disable(payload: TwoFactorVerifyIn, admin: dict = Depends(require_admin)) -> dict:
+    """Disable 2FA on your OWN admin account (requires current 6-digit code)."""
+    doc = await db.admins.find_one({"_id": admin["sub"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    if not doc.get("twoFactorEnabled"):
+        raise HTTPException(status_code=400, detail="2FA is not enabled.")
+    if not _verify_totp(doc.get("twoFactorSecret") or "", payload.code):
+        raise HTTPException(status_code=401, detail="Invalid code")
+    await db.admins.update_one(
+        {"_id": doc["_id"]},
+        {
+            "$unset": {
+                "twoFactorSecret": "",
+                "twoFactorEnabled": "",
+                "twoFactorBackupCodes": "",
+                "twoFactorPendingSecret": "",
+                "twoFactorEnabledAt": "",
+            }
+        },
+    )
+    return {"ok": True}
+
+
+@app.get("/api/admin/2fa/backup-codes")
+async def admin_2fa_backup_codes_remaining(admin: dict = Depends(require_admin)) -> dict:
+    doc = await db.admins.find_one({"_id": admin["sub"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return {
+        "enabled": bool(doc.get("twoFactorEnabled")),
+        "remaining": len(doc.get("twoFactorBackupCodes") or []),
+    }
+
+
+@app.post("/api/admin/2fa/backup-codes/regenerate")
+async def admin_2fa_regenerate_backup_codes(payload: TwoFactorVerifyIn, admin: dict = Depends(require_admin)) -> dict:
+    doc = await db.admins.find_one({"_id": admin["sub"]})
+    if not doc or not doc.get("twoFactorEnabled"):
+        raise HTTPException(status_code=400, detail="2FA is not enabled.")
+    if not _verify_totp(doc.get("twoFactorSecret") or "", payload.code):
+        raise HTTPException(status_code=401, detail="Invalid code")
+    codes = _new_backup_codes()
+    await db.admins.update_one(
+        {"_id": doc["_id"]},
+        {"$set": {"twoFactorBackupCodes": _hash_backup_codes(codes)}},
+    )
+    return {"backupCodes": codes}
+
+
+@app.post("/api/admin/2fa/reset/{admin_id}")
+async def admin_2fa_reset(admin_id: str, admin: dict = Depends(require_admin)) -> dict:
+    """Super-admin only: wipe another admin's 2FA (so they can re-enroll on next login)."""
+    require_super(admin)
+    doc = await db.admins.find_one({"_id": admin_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    await db.admins.update_one(
+        {"_id": admin_id},
+        {
+            "$unset": {
+                "twoFactorSecret": "",
+                "twoFactorEnabled": "",
+                "twoFactorBackupCodes": "",
+                "twoFactorPendingSecret": "",
+                "twoFactorEnabledAt": "",
+            }
+        },
+    )
+    return {"ok": True}
 
 
 @app.get("/api/admin/me")
 async def admin_me(admin: dict = Depends(require_admin)) -> dict:
+    doc = await db.admins.find_one({"_id": admin.get("sub")})
+    if doc:
+        return {"ok": True, "user": doc_to_admin(doc)}
     return {
         "ok": True,
         "user": {
@@ -405,6 +730,7 @@ async def admin_me(admin: dict = Depends(require_admin)) -> dict:
             "username": admin.get("username"),
             "isSuper": bool(admin.get("isSuper")),
             "permissions": admin.get("permissions", []),
+            "twoFactorEnabled": False,
         },
     }
 
@@ -428,8 +754,7 @@ async def create_admin(payload: AdminCreate, admin: dict = Depends(require_admin
     username = payload.username.lower().strip()
     if not username or not payload.password:
         raise HTTPException(status_code=400, detail="Username and password required")
-    if username == "master":
-        raise HTTPException(status_code=400, detail="Reserved username")
+    validate_password_strength(payload.password)
     existing = await db.admins.find_one({"username": username})
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
@@ -439,9 +764,11 @@ async def create_admin(payload: AdminCreate, admin: dict = Depends(require_admin
     doc = {
         "_id": str(uuid.uuid4()),
         "username": username,
+        "email": (payload.email or "").strip().lower() or None,
         "passwordHash": hash_password(payload.password),
         "permissions": perms,
         "isSuper": bool(payload.isSuper),
+        "twoFactorEnabled": False,
         "createdAt": datetime.utcnow().isoformat(),
     }
     await db.admins.insert_one(doc)
@@ -450,19 +777,27 @@ async def create_admin(payload: AdminCreate, admin: dict = Depends(require_admin
 
 @app.put("/api/admin/admins/{admin_id}")
 async def update_admin(admin_id: str, payload: AdminUpdate, admin: dict = Depends(require_admin)) -> dict:
-    require_super(admin)
+    # Super admins can update anyone; other admins can update themselves (password/email only).
+    is_self = admin.get("sub") == admin_id
+    if not admin.get("isSuper") and not is_self:
+        raise HTTPException(status_code=403, detail="Super admin only")
     doc = await db.admins.find_one({"_id": admin_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Admin not found")
     update: dict[str, Any] = {}
     if payload.password:
+        validate_password_strength(payload.password)
         update["passwordHash"] = hash_password(payload.password)
-    if payload.permissions is not None:
-        update["permissions"] = [p for p in payload.permissions if p in ALL_PERMS]
-    if payload.isSuper is not None:
-        update["isSuper"] = bool(payload.isSuper)
-        if payload.isSuper:
-            update["permissions"] = ALL_PERMS.copy()
+    if payload.email is not None:
+        update["email"] = (payload.email or "").strip().lower() or None
+    # Only super admins can change permissions / super flag
+    if admin.get("isSuper"):
+        if payload.permissions is not None:
+            update["permissions"] = [p for p in payload.permissions if p in ALL_PERMS]
+        if payload.isSuper is not None:
+            update["isSuper"] = bool(payload.isSuper)
+            if payload.isSuper:
+                update["permissions"] = ALL_PERMS.copy()
     if update:
         await db.admins.update_one({"_id": admin_id}, {"$set": update})
     new_doc = await db.admins.find_one({"_id": admin_id})
@@ -776,8 +1111,7 @@ async def auth_register(payload: UserRegisterIn) -> dict:
     email = str(payload.email).strip().lower()
     if len(full_name) < 2:
         raise HTTPException(status_code=400, detail="Please enter your full name")
-    if len(payload.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    validate_password_strength(payload.password)
     existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="An account with that email already exists")
@@ -934,6 +1268,37 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+@app.on_event("startup")
+async def _startup_seed_admin() -> None:
+    """One-time migration: ensure a super admin exists.
+
+    - If an admin with username 'master' already exists, do nothing.
+    - Otherwise, seed one with username 'master', password from ADMIN_PASSWORD env,
+      isSuper=true, and 2FA disabled (to be enrolled on first login).
+    The password can be changed from the admin panel; the account can be renamed or deleted.
+    """
+    try:
+        existing_master = await db.admins.find_one({"username": "master"})
+        if not existing_master:
+            # If ADMIN_PASSWORD fails our modern password policy (e.g., the legacy 1121211221),
+            # seed it anyway so the admin can log in and immediately be prompted to change it.
+            await db.admins.insert_one({
+                "_id": str(uuid.uuid4()),
+                "username": "master",
+                "email": SMTP_USER or None,
+                "passwordHash": hash_password(ADMIN_PASSWORD),
+                "permissions": ALL_PERMS.copy(),
+                "isSuper": True,
+                "twoFactorEnabled": False,
+                "mustChangePassword": True,
+                "createdAt": datetime.utcnow().isoformat(),
+                "note": "Built-in super admin (formerly the master password). Change username/password anytime.",
+            })
+            logger.info("Seeded built-in 'master' super admin from ADMIN_PASSWORD.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Startup admin seeding failed: %s", exc)
 
 
 @app.on_event("shutdown")

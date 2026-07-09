@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Trash2, Plus, Save, ShieldCheck, RefreshCw } from 'lucide-react';
+import { Trash2, Plus, Save, ShieldCheck, RefreshCw, KeyRound, ShieldOff } from 'lucide-react';
 import api from '../../lib/api';
 import { useToast } from '../../hooks/use-toast';
 import { Field, TextInput } from './FormControls';
+import { pwdIssues, PWD_MSG } from '../../pages/AdminLogin';
 
 const SECTION_LABELS = {
   navbar: 'Navigation Menu',
@@ -47,7 +48,7 @@ export default function AdminsManager({ currentUser }) {
     }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { load(); }, []);
 
   const toggleNewPerm = (k) => {
     setNewAdmin((s) => ({
@@ -63,10 +64,15 @@ export default function AdminsManager({ currentUser }) {
       toast({ title: 'Missing info', description: 'Username and password are required.', variant: 'destructive' });
       return;
     }
+    const issues = pwdIssues(newAdmin.password);
+    if (issues.length) {
+      toast({ title: 'Weak password', description: issues.join(' · '), variant: 'destructive' });
+      return;
+    }
     setCreating(true);
     try {
       await api.post('/admin/admins', newAdmin);
-      toast({ title: 'Admin created', description: `${newAdmin.username} can now sign in.` });
+      toast({ title: 'Admin created', description: `${newAdmin.username} can sign in and will be prompted to enroll in 2FA on first login.` });
       setNewAdmin({ username: '', password: '', permissions: [], isSuper: false });
       load();
     } catch (e) {
@@ -97,13 +103,29 @@ export default function AdminsManager({ currentUser }) {
   };
 
   const resetPassword = async (a) => {
-    const pw = window.prompt(`New password for ${a.username}:`);
+    const pw = window.prompt(`New password for ${a.username}:\n\n${PWD_MSG}`);
     if (!pw) return;
+    const issues = pwdIssues(pw);
+    if (issues.length) {
+      toast({ title: 'Weak password', description: issues.join(' · '), variant: 'destructive' });
+      return;
+    }
     try {
       await api.put(`/admin/admins/${a.id}`, { password: pw });
       toast({ title: 'Password updated', description: a.username });
     } catch (e) {
       toast({ title: 'Update failed', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
+    }
+  };
+
+  const reset2fa = async (a) => {
+    if (!window.confirm(`Reset 2FA for "${a.username}"?\nThey'll be asked to enroll again on their next login.`)) return;
+    try {
+      await api.post(`/admin/2fa/reset/${a.id}`);
+      toast({ title: '2FA reset', description: `${a.username} will re-enroll on next login.` });
+      load();
+    } catch (e) {
+      toast({ title: 'Reset failed', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
     }
   };
 
@@ -137,6 +159,7 @@ export default function AdminsManager({ currentUser }) {
             onUpdatePerms={(p) => updatePerms(a, p)}
             onSetSuper={(s) => setSuper(a, s)}
             onResetPassword={() => resetPassword(a)}
+            onReset2fa={() => reset2fa(a)}
             onRemove={() => removeAdmin(a)}
             isCurrentUser={currentUser?.id === a.id}
           />
@@ -146,10 +169,12 @@ export default function AdminsManager({ currentUser }) {
       {/* Create new */}
       <div className="border border-[#e8dfd1] rounded-2xl p-5 bg-[#faf6f0]">
         <h4 className="font-serif text-lg text-[#1a1410] mb-4 flex items-center gap-2"><Plus className="w-4 h-4" /> Add new admin</h4>
-        <div className="grid sm:grid-cols-2 gap-3 mb-4">
+        <div className="grid sm:grid-cols-2 gap-3 mb-2">
           <Field label="Username"><TextInput value={newAdmin.username} onChange={(v) => setNewAdmin({ ...newAdmin, username: v })} placeholder="e.g. mom" /></Field>
-          <Field label="Password"><TextInput value={newAdmin.password} onChange={(v) => setNewAdmin({ ...newAdmin, password: v })} placeholder="choose a password" type="text" /></Field>
+          <Field label="Password"><TextInput value={newAdmin.password} onChange={(v) => setNewAdmin({ ...newAdmin, password: v })} placeholder="choose a strong password" type="text" /></Field>
         </div>
+        <PasswordChecklist password={newAdmin.password} />
+        <p className="text-xs text-[#8b6b4f] mt-3 mb-4"><ShieldCheck className="w-3 h-3 inline mr-1" /> They will be asked to set up an authenticator app on their first login.</p>
         <label className="flex items-center gap-2 text-sm text-[#3d3128] mb-4 cursor-pointer">
           <input type="checkbox" checked={newAdmin.isSuper} onChange={(e) => setNewAdmin({ ...newAdmin, isSuper: e.target.checked })} className="rounded" />
           <ShieldCheck className="w-4 h-4 text-[#c9a876]" /> Super admin (full access, can manage other admins)
@@ -175,7 +200,27 @@ export default function AdminsManager({ currentUser }) {
   );
 }
 
-function AdminRow({ admin, allPerms, onUpdatePerms, onSetSuper, onResetPassword, onRemove, isCurrentUser }) {
+function PasswordChecklist({ password }) {
+  const items = [
+    { ok: (password || '').length >= 8, label: 'At least 8 characters' },
+    { ok: /[A-Z]/.test(password || ''), label: 'One uppercase letter' },
+    { ok: /[a-z]/.test(password || ''), label: 'One lowercase letter' },
+    { ok: /[0-9]/.test(password || ''), label: 'One number' },
+    { ok: /[^A-Za-z0-9]/.test(password || ''), label: 'One symbol' },
+  ];
+  if (!password) return null;
+  return (
+    <ul className="text-xs grid sm:grid-cols-2 gap-x-4 gap-y-1 mb-1 mt-1" data-testid="password-checklist">
+      {items.map((it) => (
+        <li key={it.label} className={it.ok ? 'text-green-800' : 'text-[#8b6b4f]'}>
+          <span className="inline-block w-4">{it.ok ? '\u2713' : '\u2022'}</span> {it.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function AdminRow({ admin, allPerms, onUpdatePerms, onSetSuper, onResetPassword, onReset2fa, onRemove, isCurrentUser }) {
   const [permissions, setPermissions] = useState(admin.permissions || []);
   const [editing, setEditing] = useState(false);
   const dirty = JSON.stringify([...permissions].sort()) !== JSON.stringify([...(admin.permissions || [])].sort());
@@ -186,17 +231,26 @@ function AdminRow({ admin, allPerms, onUpdatePerms, onSetSuper, onResetPassword,
 
   return (
     <div className="border border-[#e8dfd1] rounded-2xl p-5 bg-white">
-      <div className="flex items-start justify-between gap-3 mb-3">
+      <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="font-serif text-lg text-[#1a1410]">{admin.username}</span>
             {admin.isSuper && <span className="inline-flex items-center gap-1 text-xs bg-[#c9a876]/20 text-[#6b4f3a] px-2 py-0.5 rounded-full"><ShieldCheck className="w-3 h-3" /> super</span>}
+            {admin.twoFactorEnabled ? (
+              <span className="inline-flex items-center gap-1 text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full" data-testid="admin-row-2fa-on"><ShieldCheck className="w-3 h-3" /> 2FA on</span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full" data-testid="admin-row-2fa-off"><ShieldOff className="w-3 h-3" /> 2FA pending</span>
+            )}
             {isCurrentUser && <span className="text-xs text-[#8b6b4f]">(you)</span>}
           </div>
-          {admin.createdAt && <p className="text-xs text-[#8b6b4f] mt-0.5">Created {new Date(admin.createdAt).toLocaleDateString()}</p>}
+          {admin.email && <p className="text-xs text-[#8b6b4f] mt-0.5">{admin.email}</p>}
+          {admin.createdAt && <p className="text-xs text-[#8b6b4f]">Created {new Date(admin.createdAt).toLocaleDateString()}</p>}
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={onResetPassword} className="text-xs px-3 py-1.5 border border-[#e8dfd1] rounded-lg hover:bg-[#faf6f0]">Reset password</button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={onResetPassword} className="text-xs px-3 py-1.5 border border-[#e8dfd1] rounded-lg hover:bg-[#faf6f0] inline-flex items-center gap-1"><KeyRound className="w-3 h-3" /> Reset password</button>
+          {!isCurrentUser && admin.twoFactorEnabled && (
+            <button onClick={onReset2fa} data-testid={`admin-row-reset-2fa-${admin.id}`} className="text-xs px-3 py-1.5 border border-[#e8dfd1] rounded-lg hover:bg-[#faf6f0] inline-flex items-center gap-1"><ShieldOff className="w-3 h-3" /> Reset 2FA</button>
+          )}
           {!isCurrentUser && (
             <button onClick={onRemove} className="text-xs px-3 py-1.5 border border-red-300 text-red-700 rounded-lg hover:bg-red-50 inline-flex items-center gap-1"><Trash2 className="w-3 h-3" /> Delete</button>
           )}

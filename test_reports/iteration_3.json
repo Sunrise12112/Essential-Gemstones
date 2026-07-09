@@ -1,0 +1,42 @@
+{
+  "summary": "End-to-end verification of admin 2FA (TOTP + backup codes), password policy, and master-admin refactor. Backend: 25/25 pytest cases pass covering legacy shortcut removal, master seed, /admin/2fa/setup + /enable + /login + /disable + /reset, backup-code one-time-use, password policy on admin create/update + /auth/register, purpose-scoped JWTs (setup/challenge cannot access real admin routes), and full-session JWT no-regression on GET /admin/admins, PUT /site, GET /admin/me, backup-codes endpoints. Frontend: full 3-step login flow works — password → QR setup wizard (admin-2fa-setup with admin-2fa-qr data-image URL + admin-2fa-secret + admin-2fa-setup-code + admin-2fa-setup-submit) → backup codes screen (admin-2fa-backup with 10 admin-2fa-backup-code entries + admin-2fa-backup-continue) → dashboard. Subsequent login shows admin-2fa-challenge; wrong 6-digit code shows 'Wrong code / Invalid code' toast; correct code navigates to dashboard. Manage Admins section shows correct 2FA status badges (admin-row-2fa-on green for master, admin-row-2fa-off amber for pending admins); PasswordChecklist appears live under the new-admin password field; weak password triggers 'Weak password' toast + does NOT submit; strong password 'Test!234' creates admin. AI Writer button still opens admin-ai-panel (no regression).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/login", "issue": "Legacy in-DB master password ('1121211221') was mis-hashed after prior test runs and had to be re-seeded manually (bcrypt hash in db.admins did not verify against '1121211221'). Root cause: the /startup seed only inserts if master doesn't exist; there is no self-heal if the stored hash drifts from ADMIN_PASSWORD. Consider adding a safe self-heal in the startup seed that, when the seeded hash doesn't verify against the current ADMIN_PASSWORD env, updates it. Impact: after `mongo db.admins.deleteMany({username:'master'})` + restart it works fine; but if the hash gets stale (e.g. someone changed ADMIN_PASSWORD env), admins cannot recover without direct DB access."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "AdminLogin challenge input", "issue": "The onChange handler `e.target.value.toUpperCase()` runs on every keystroke on the 2FA challenge input; this is fine for backup codes (XXXX-XXXX hex) but harmless for numeric 6-digit TOTP. However on wrong-code submit, `setCode('')` is called AFTER the toast, but the visible input isn't always cleared because the input's `value={code}` state binding races with focus. Manual test found the input retained '000000' after the wrong-code toast (minor UX). Not blocking.", "selector": "[data-testid='admin-2fa-challenge-code']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_admin_2fa.py",
+    "/app/test_reports/pytest/pytest_2fa.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Add startup self-heal for master admin — if stored passwordHash does NOT verify against current ADMIN_PASSWORD env, update it (with a warning log). Prevents lockouts.",
+    "OPTIONAL: On wrong 2FA challenge code, clear the input immediately (or select-all so retyping replaces cleanly). Currently the previous digits linger under the toast."
+  ],
+  "critical_code_review_comments": [
+    "server.py continues to grow (~1770+ lines now with 2FA + password policy). Splitting into modules is overdue: auth/, admin/, admin_2fa.py, admin_ai/, users/, uploads/, chat/.",
+    "validate_password_strength (server.py ~L123) always raises the same generic PASSWORD_POLICY_MESSAGE regardless of which rule failed. Users see one line and must guess. Consider returning a structured list of failed criteria (mirrors the frontend pwdIssues) so the admin UI can highlight which rule the client-side missed. The frontend already knows every rule client-side, so this is just for API consistency.",
+    "TOTP secret is generated in /admin/2fa/setup and persisted to twoFactorPendingSecret BEFORE /admin/2fa/enable verifies a code. Good. But there's no rate-limit on /admin/2fa/enable or /admin/2fa/login, so an attacker with a stolen setup/challenge token can brute-force codes for the full token lifetime (5-30 min). Consider adding a max-attempts counter per setup/challenge token and locking after N tries. NIST 800-63B recommends 5.",
+    "Backup codes are stored as bcrypt hashes (good) but _hash_backup_codes iterates bcrypt 10 times synchronously on the request thread — that's ~150-200 ms of blocking CPU on /admin/2fa/enable. Consider running under asyncio.to_thread or lowering cost factor for backup-only hashes.",
+    "PUT /api/admin/admins/{admin_id}: any admin (including non-super) can update their OWN email via `is_self` path. That's fine, but there's no email format validation on this path (payload.email is Optional[str] not EmailStr). A super admin can also set another admin's email to garbage. Consider EmailStr for AdminUpdate.email.",
+    "The setup token / challenge token TTL constants (SETUP_TOKEN_MINUTES=30, TWO_FA_CHALLENGE_MINUTES=5) are OK, but the setup token is re-issued on every /admin/login → needs_2fa_setup call. Consider invalidating older tokens after enrollment succeeds (jti + revocation list) so an intercepted setup token can't be reused after 2FA is enabled."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin_2fa.py (new)"
+  ],
+  "success_rate": {"backend": "100% (25/25)", "frontend": "100% of the 6 spec'd flows verified"},
+  "test_credentials": "Master: username='master' password='1121211221' (per /app/memory/test_credentials.md; grandfathered legacy password that fails the new policy). NOTE: I had to manually re-seed the master passwordHash via bcrypt in Mongo because the stored hash did not verify against 1121211221 (likely leftover from an earlier test iteration).",
+  "seed_data_creation": "Backend tests create/destroy: (a) TEST_strong_<uuid>@example.com users via /auth/register (deleted after each test), (b) test_weak_/test_strong_/test_upd_/test_nonsuper_/test_target_ admins via /admin/admins (module teardown deletes all admins matching ^test_). Master 2FA state is wiped at test start & end and re-enrolled by the module fixture. Frontend flow test created 'test_frontend_weak_x' admin (deleted after run). No lingering test data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "backend/tests/test_admin_2fa.py (25 tests) covers the full 2FA + password-policy surface. Key gotcha: if master login returns 401 with '1121211221', the stored bcrypt hash has drifted — re-seed via: `python -c \"import pymongo,bcrypt; db=pymongo.MongoClient('mongodb://localhost:27017')['test_database']; db.admins.update_one({'username':'master'},{'\\$set':{'passwordHash':bcrypt.hashpw(b'1121211221',bcrypt.gensalt()).decode()}})\"`. To reset master 2FA between runs, `$unset` twoFactorSecret/twoFactorEnabled/twoFactorBackupCodes/twoFactorPendingSecret directly. The AdminLogin.jsx frontend requires an actual TOTP secret to test — generate via `pyotp.TOTP(secret).now()` after reading admin-2fa-secret from the DOM. Existing SignupPrompt still fires on /admin/dashboard after ~10s — set `localStorage.eg_signup_prompt_dismissed='1'` before any admin-dashboard flow.",
+  "rca_of_the_issue": "Feature is fully implemented and working end-to-end. Backend tests pass 25/25 and the 6 frontend flows in the review request all verify green. The one non-blocking gotcha (master password hash drift after previous iterations) is a startup-seeding robustness issue rather than a functional bug in the 2FA feature itself. Frontend 2FA challenge input UX has a minor lag where wrong-code entry isn't cleared immediately — cosmetic only."
+}
