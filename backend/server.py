@@ -45,6 +45,7 @@ MAX_VIDEO_BYTES = 50 * 1024 * 1024
 
 import io as _io
 import base64 as _base64
+import requests as _requests
 import re as _pw_re
 import secrets as _secrets
 
@@ -491,13 +492,24 @@ def default_site() -> dict:
     }
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    out = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 async def get_site_doc() -> dict:
     doc = await db.site.find_one({"_id": "main"})
     if doc is None:
         doc = {"_id": "main", **default_site()}
         await db.site.insert_one(doc)
     doc.pop("_id", None)
-    return doc
+    # Fill any missing keys from defaults so partial saves can never blank out a section
+    return _deep_merge(default_site(), doc)
 
 
 # ---------------- ROUTES ---------------- #
@@ -850,7 +862,54 @@ async def update_site(payload: dict, admin: dict = Depends(require_admin)) -> di
     return out
 
 
-# ---- uploads ---- #
+# ---- uploads (persistent object storage) ---- #
+
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+STORAGE_PREFIX = "essentialgemstones/uploads"
+_storage_key: Optional[str] = None
+
+MEDIA_MIME = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".webp": "image/webp", ".gif": "image/gif", ".avif": "image/avif",
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+    ".m4v": "video/x-m4v",
+}
+
+
+def _init_storage() -> str:
+    global _storage_key
+    if _storage_key:
+        return _storage_key
+    emergent_key = os.environ.get("EMERGENT_LLM_KEY")
+    if not emergent_key:
+        raise RuntimeError("EMERGENT_LLM_KEY missing; object storage unavailable")
+    resp = _requests.post(f"{STORAGE_URL}/init", json={"emergent_key": emergent_key}, timeout=30)
+    resp.raise_for_status()
+    _storage_key = resp.json()["storage_key"]
+    return _storage_key
+
+
+def _storage_put(path: str, data: bytes, content_type: str) -> dict:
+    key = _init_storage()
+    resp = _requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=300,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _storage_get(path: str) -> tuple[bytes, str]:
+    global _storage_key
+    key = _init_storage()
+    resp = _requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=120)
+    if resp.status_code == 403:
+        _storage_key = None
+        key = _init_storage()
+        resp = _requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=120)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 
 @app.post("/api/upload")
@@ -870,30 +929,56 @@ async def upload_media(
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
 
-    new_name = f"{uuid.uuid4().hex}{ext}"
-    dest = UPLOAD_DIR / new_name
-
+    buf = _io.BytesIO()
     size = 0
-    with dest.open("wb") as out:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > max_bytes:
-                out.close()
-                dest.unlink(missing_ok=True)
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File exceeds max size of {max_bytes // (1024 * 1024)}MB",
-                )
-            out.write(chunk)
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds max size of {max_bytes // (1024 * 1024)}MB",
+            )
+        buf.write(chunk)
+
+    new_name = f"{uuid.uuid4().hex}{ext}"
+    storage_path = f"{STORAGE_PREFIX}/{new_name}"
+    content_type = MEDIA_MIME.get(ext, file.content_type or "application/octet-stream")
+    try:
+        result = await asyncio.to_thread(_storage_put, storage_path, buf.getvalue(), content_type)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Object storage upload failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Upload storage failed. Please try again.")
+
+    await db.media.insert_one({
+        "_id": new_name,
+        "storagePath": result.get("path", storage_path),
+        "originalFilename": file.filename,
+        "contentType": content_type,
+        "kind": kind,
+        "size": size,
+        "createdAt": datetime.utcnow().isoformat(),
+    })
     return {"url": f"/api/uploads/{new_name}", "kind": kind, "size": size}
 
 
 @app.get("/api/uploads/{name}")
-async def serve_upload(name: str) -> FileResponse:
+async def serve_upload(name: str):
     safe_name = Path(name).name
+    record = await db.media.find_one({"_id": safe_name})
+    if record:
+        try:
+            content, ctype = await asyncio.to_thread(_storage_get, record["storagePath"])
+            return Response(
+                content=content,
+                media_type=record.get("contentType") or ctype,
+                headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Object storage fetch failed for %s: %s", safe_name, exc)
+    # Legacy fallback: files uploaded before object storage was added
     file_path = UPLOAD_DIR / safe_name
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Not found")
@@ -1312,6 +1397,57 @@ async def _startup_seed_admin() -> None:
                     )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Startup admin seeding failed: %s", exc)
+
+
+@app.on_event("startup")
+async def _startup_storage() -> None:
+    """Init object storage and migrate any legacy local uploads into it."""
+    try:
+        await asyncio.to_thread(_init_storage)
+        logger.info("Object storage initialized")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Object storage init failed: %s", exc)
+        return
+
+    async def _migrate() -> None:
+        for fp in UPLOAD_DIR.iterdir():
+            if not fp.is_file():
+                continue
+            name = fp.name
+            if await db.media.find_one({"_id": name}):
+                continue
+            ext = fp.suffix.lower()
+            if ext not in MEDIA_MIME:
+                continue
+            try:
+                data = fp.read_bytes()
+                storage_path = f"{STORAGE_PREFIX}/{name}"
+                result = await asyncio.to_thread(_storage_put, storage_path, data, MEDIA_MIME[ext])
+                await db.media.insert_one({
+                    "_id": name,
+                    "storagePath": result.get("path", storage_path),
+                    "originalFilename": name,
+                    "contentType": MEDIA_MIME[ext],
+                    "kind": "video" if ext in VIDEO_EXTENSIONS else "image",
+                    "size": len(data),
+                    "createdAt": datetime.utcnow().isoformat(),
+                })
+                logger.info("Migrated legacy upload %s to object storage", name)
+            except Exception as exc:  # noqa: BLE001
+                if "409" in str(exc):
+                    await db.media.insert_one({
+                        "_id": name,
+                        "storagePath": f"{STORAGE_PREFIX}/{name}",
+                        "originalFilename": name,
+                        "contentType": MEDIA_MIME[ext],
+                        "kind": "video" if ext in VIDEO_EXTENSIONS else "image",
+                        "size": fp.stat().st_size,
+                        "createdAt": datetime.utcnow().isoformat(),
+                    })
+                    continue
+                logger.warning("Legacy upload migration failed for %s: %s", name, exc)
+
+    asyncio.create_task(_migrate())
 
 
 @app.on_event("shutdown")

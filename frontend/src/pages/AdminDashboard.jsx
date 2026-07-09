@@ -29,7 +29,7 @@ const SECTION_LABELS = {
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
-  const { site, refresh } = useSite();
+  const { site, loading: siteLoading, refresh } = useSite();
   const { toast } = useToast();
   const [data, setData] = useState(null);
   const [openSections, setOpenSections] = useState({ navbar: true });
