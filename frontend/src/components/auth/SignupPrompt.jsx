@@ -11,6 +11,8 @@ export default function SignupPrompt() {
 
   useEffect(() => {
     if (user) return; // already logged in
+    if (typeof window !== 'undefined' && localStorage.getItem('eg_admin_token')) return; // admin session — don't prompt
+    if (typeof window !== 'undefined' && window.location?.pathname?.startsWith('/admin')) return; // never on admin pages
     if (localStorage.getItem(DISMISS_KEY)) return; // previously dismissed
     const t = setTimeout(() => setShow(true), DELAY_MS);
     return () => clearTimeout(t);

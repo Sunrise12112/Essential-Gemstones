@@ -23,6 +23,14 @@ Recreate essentialgemstones.com pixel-perfectly with an artisan, earthy aestheti
 - 2026-02: Shopping cart removed at user request
 - 2026-02-08: **AI Chat locked behind member auth** — public chat modes now require a valid user or admin JWT. Anonymous X-Client-Id requests are rejected with HTTP 401. Frontend shows a "Members only" login gate with Signup/Login CTAs. All chat session CRUD endpoints require member auth. Admin-writer path unchanged.
 - 2026-02-08: **Fix: "Not an admin token" on admin save** — Axios interceptor in `frontend/src/lib/api.js` was preferring `eg_user_token` for non-`/admin` paths, so `PUT /api/site`, `/subscribers`, `/users`, `/upload`, `/ai-edit` were sent with the member token when both were present. Interceptor now forces the admin token when browser is on `/admin/*` OR when the target route is any known admin-only path. Verified with live browser test: PUT /api/site returns 200 with dual tokens in localStorage.
+- 2026-02-08: **Unified Admin AI + persistence + hero controls (batch)**:
+  - `GET /api/site` now returns `Cache-Control: no-store, Pragma: no-cache, Expires: 0` headers so admin edits reflect immediately across devices (fixes the "3-minute stale" bug caused by CDN caching on production).
+  - New unified admin AI endpoint `POST /api/admin/ai` that auto-classifies every prompt into `chat` | `edit` | `email`. Frontend AIWriter rewritten with single input (no more Write/Edit tabs); each response is rendered with a "Reply / Site edit / Email draft" badge and appropriate action buttons.
+  - Admin AI can now **broadcast to all newsletter subscribers** — it drafts subject + HTML, admin previews and confirms via `POST /api/admin/ai/email/send` (uses existing Gmail SMTP).
+  - Global "AI just edited your site" undo banner on the admin dashboard listens for the `eg:ai-edit` custom event dispatched by AIWriter and shows a big Undo button until dismissed or another edit lands.
+  - Hero video now has a **pause/play** button next to the mute toggle (`data-testid='hero-video-playpause'`).
+  - SignupPrompt suppressed on `/admin` routes and whenever an admin token exists.
+  - Testing: 8/8 backend pytest cases pass, 100% frontend flows verified (`/app/test_reports/iteration_2.json`, tests at `/app/backend/tests/test_admin_ai_unified.py`).
 
 ## Key API Endpoints
 - Auth: `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/favorites/{id}`
