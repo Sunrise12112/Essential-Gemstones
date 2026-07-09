@@ -184,6 +184,149 @@ def _match_backup_code(input_code: str, hashed_list: list[str]) -> int:
     return -1
 
 
+# ---------- Email OTP as an alternative 2FA method ---------- #
+
+EMAIL_OTP_TTL_MINUTES = 10
+EMAIL_OTP_MAX_ATTEMPTS = 5
+EMAIL_OTP_RESEND_SECONDS = 30
+
+
+def _new_email_otp() -> str:
+    return f"{_secrets.randbelow(1000000):06d}"
+
+
+def _obfuscate_email(email: str) -> str:
+    if not email or "@" not in email:
+        return "your inbox"
+    name, domain = email.split("@", 1)
+    if len(name) <= 2:
+        masked = name[0] + "*"
+    else:
+        masked = name[0] + "*" * (len(name) - 2) + name[-1]
+    return f"{masked}@{domain}"
+
+
+def _email_otp_html(username: str, code: str) -> str:
+    return f"""
+    <div style="font-family: Georgia, 'Times New Roman', serif; background:#faf6f0; padding:32px; color:#1a1410;">
+      <div style="max-width:520px; margin:0 auto; background:#ffffff; border:1px solid #e8dfd1; border-radius:16px; padding:32px;">
+        <h1 style="font-size:22px; margin:0 0 8px; color:#1a1410;">Essential Gemstones \u00b7 Admin sign-in</h1>
+        <p style="color:#5a4a3d; font-size:14px; margin:0 0 24px;">Hi {username}, use this code to finish signing in. It expires in {EMAIL_OTP_TTL_MINUTES} minutes.</p>
+        <div style="font-family: 'Courier New', monospace; font-size:34px; letter-spacing:12px; text-align:center; padding:20px; background:#faf6f0; border:1px solid #e8dfd1; border-radius:12px; color:#1a1410;">
+          {code}
+        </div>
+        <p style="color:#8b6b4f; font-size:12px; margin:24px 0 0;">If you didn\u2019t try to sign in, you can safely ignore this email \u2014 no one can get in without your password.</p>
+      </div>
+    </div>
+    """
+
+
+async def _store_email_otp(admin_id: str, code: str) -> None:
+    await db.admin_email_otps.update_one(
+        {"_id": admin_id},
+        {
+            "$set": {
+                "code_hash": hash_password(code),
+                "expires_at": (datetime.utcnow() + timedelta(minutes=EMAIL_OTP_TTL_MINUTES)).isoformat(),
+                "sent_at": datetime.utcnow().isoformat(),
+                "attempts": 0,
+            }
+        },
+        upsert=True,
+    )
+
+
+async def _consume_email_otp(admin_id: str, code: str) -> bool:
+    row = await db.admin_email_otps.find_one({"_id": admin_id})
+    if not row:
+        return False
+    try:
+        expires = datetime.fromisoformat(row.get("expires_at"))
+    except Exception:
+        return False
+    if datetime.utcnow() > expires:
+        await db.admin_email_otps.delete_one({"_id": admin_id})
+        return False
+    if int(row.get("attempts", 0)) >= EMAIL_OTP_MAX_ATTEMPTS:
+        await db.admin_email_otps.delete_one({"_id": admin_id})
+        return False
+    clean = (code or "").strip()
+    if not clean.isdigit() or len(clean) != 6:
+        await db.admin_email_otps.update_one({"_id": admin_id}, {"$inc": {"attempts": 1}})
+        return False
+    if not verify_password(clean, row.get("code_hash", "")):
+        await db.admin_email_otps.update_one({"_id": admin_id}, {"$inc": {"attempts": 1}})
+        return False
+    # success: burn the code
+    await db.admin_email_otps.delete_one({"_id": admin_id})
+    return True
+
+
+# ---------- Trusted-Device tokens (30-day "skip 2FA on this device") ---------- #
+
+TRUSTED_DEVICE_DAYS = 30
+
+
+def _make_trusted_device_token(admin_id: str, jti: str) -> str:
+    payload = {
+        "sub": admin_id,
+        "jti": jti,
+        "purpose": "trusted_device",
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int((datetime.utcnow() + timedelta(days=TRUSTED_DEVICE_DAYS)).timestamp()),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+def _decode_trusted_device_token(token: str) -> Optional[dict]:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except jwt.PyJWTError:
+        return None
+    if payload.get("purpose") != "trusted_device":
+        return None
+    return payload
+
+
+async def _issue_trusted_device(admin_id: str, user_agent: str) -> str:
+    jti = str(uuid.uuid4())
+    await db.admin_trusted_devices.insert_one(
+        {
+            "_id": jti,
+            "adminId": admin_id,
+            "userAgent": (user_agent or "")[:255],
+            "createdAt": datetime.utcnow().isoformat(),
+            "lastUsedAt": datetime.utcnow().isoformat(),
+            "expiresAt": (datetime.utcnow() + timedelta(days=TRUSTED_DEVICE_DAYS)).isoformat(),
+        }
+    )
+    return _make_trusted_device_token(admin_id, jti)
+
+
+async def _check_trusted_device(admin_id: str, token: str) -> bool:
+    payload = _decode_trusted_device_token(token)
+    if not payload or payload.get("sub") != admin_id:
+        return False
+    row = await db.admin_trusted_devices.find_one({"_id": payload.get("jti"), "adminId": admin_id})
+    if not row:
+        return False
+    # DB row expiry check (JWT also has exp, but this lets admins revoke)
+    try:
+        expires = datetime.fromisoformat(row.get("expiresAt"))
+    except Exception:
+        return False
+    if datetime.utcnow() > expires:
+        await db.admin_trusted_devices.delete_one({"_id": row["_id"]})
+        return False
+    # touch last-used timestamp (best effort)
+    await db.admin_trusted_devices.update_one(
+        {"_id": row["_id"]}, {"$set": {"lastUsedAt": datetime.utcnow().isoformat()}}
+    )
+    return True
+
+
 def make_token(sub: str, is_super: bool, permissions: list[str], username: str, role: str = "admin") -> str:
     payload = {
         "sub": sub,
@@ -521,7 +664,7 @@ async def root() -> dict:
 
 
 @app.post("/api/admin/login")
-async def admin_login(data: LoginIn) -> dict:
+async def admin_login(data: LoginIn, request: Request) -> dict:
     # Master password shortcut is removed. All logins go through the admins collection.
     if not data.username or not data.password:
         raise HTTPException(status_code=400, detail="Username and password are required.")
@@ -530,11 +673,24 @@ async def admin_login(data: LoginIn) -> dict:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if doc.get("twoFactorEnabled"):
-        # Password OK, but 2FA is required. Return a short-lived challenge token.
+        # If the browser presents a valid trusted-device token for this admin, skip 2FA.
+        trust_token = request.headers.get("X-Admin-Trust-Token", "").strip()
+        if trust_token and await _check_trusted_device(doc["_id"], trust_token):
+            token = make_token(
+                sub=doc["_id"],
+                is_super=bool(doc.get("isSuper")),
+                permissions=doc.get("permissions", []),
+                username=doc["username"],
+            )
+            return {"status": "ok", "token": token, "user": doc_to_admin(doc), "trustedDevice": True}
+
+        # Otherwise, return a short-lived 2FA challenge token.
         return {
             "status": "needs_2fa",
             "twoFactorToken": make_2fa_challenge_token(doc["_id"], doc["username"]),
             "username": doc["username"],
+            "availableMethods": _available_2fa_methods(doc),
+            "emailHint": _obfuscate_email(doc.get("email") or "") if doc.get("email") else None,
         }
 
     # 2FA not yet enrolled — issue a setup-only token so the admin must enroll before doing anything.
@@ -554,6 +710,15 @@ class TwoFactorVerifyIn(BaseModel):
 
 class TwoFactorLoginIn(BaseModel):
     code: str
+    method: Optional[str] = None  # "totp" | "email" | "backup" (auto-detect if missing)
+    trustDevice: Optional[bool] = False
+
+
+def _available_2fa_methods(doc: dict) -> list[str]:
+    methods = ["totp"]
+    if (doc.get("email") or "").strip():
+        methods.append("email")
+    return methods
 
 
 @app.post("/api/admin/2fa/setup")
@@ -628,25 +793,43 @@ async def admin_2fa_enable(payload: TwoFactorVerifyIn, admin: dict = Depends(req
 
 
 @app.post("/api/admin/2fa/login")
-async def admin_2fa_login(payload: TwoFactorLoginIn, admin: dict = Depends(require_challenge_2fa)) -> dict:
-    """Second step of login: verify TOTP (or one-time backup code) and return the real admin JWT."""
+async def admin_2fa_login(payload: TwoFactorLoginIn, request: Request, admin: dict = Depends(require_challenge_2fa)) -> dict:
+    """Second step of login: verify TOTP / email OTP / backup code, and return the real admin JWT."""
     doc = await db.admins.find_one({"_id": admin["sub"]})
     if not doc or not doc.get("twoFactorEnabled"):
         raise HTTPException(status_code=400, detail="2FA is not enabled for this admin.")
     code = (payload.code or "").strip()
+    method = (payload.method or "").strip().lower()
     secret = doc.get("twoFactorSecret") or ""
 
-    if _verify_totp(secret, code):
-        pass  # OK
-    else:
-        # Try backup codes
+    verified = False
+    if method == "email":
+        verified = await _consume_email_otp(doc["_id"], code)
+    elif method == "backup":
         idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
-        if idx < 0:
-            raise HTTPException(status_code=401, detail="Invalid code")
-        # Consume the backup code
-        remaining = list(doc.get("twoFactorBackupCodes") or [])
-        remaining.pop(idx)
-        await db.admins.update_one({"_id": doc["_id"]}, {"$set": {"twoFactorBackupCodes": remaining}})
+        if idx >= 0:
+            remaining = list(doc.get("twoFactorBackupCodes") or [])
+            remaining.pop(idx)
+            await db.admins.update_one({"_id": doc["_id"]}, {"$set": {"twoFactorBackupCodes": remaining}})
+            verified = True
+    elif method == "totp":
+        verified = _verify_totp(secret, code)
+    else:
+        # Auto-detect (backwards compatibility): try TOTP -> email OTP -> backup code
+        if _verify_totp(secret, code):
+            verified = True
+        elif await _consume_email_otp(doc["_id"], code):
+            verified = True
+        else:
+            idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
+            if idx >= 0:
+                remaining = list(doc.get("twoFactorBackupCodes") or [])
+                remaining.pop(idx)
+                await db.admins.update_one({"_id": doc["_id"]}, {"$set": {"twoFactorBackupCodes": remaining}})
+                verified = True
+
+    if not verified:
+        raise HTTPException(status_code=401, detail="Invalid code")
 
     token = make_token(
         sub=doc["_id"],
@@ -654,7 +837,106 @@ async def admin_2fa_login(payload: TwoFactorLoginIn, admin: dict = Depends(requi
         permissions=doc.get("permissions", []),
         username=doc["username"],
     )
-    return {"ok": True, "token": token, "user": doc_to_admin(doc)}
+    resp: dict = {"ok": True, "token": token, "user": doc_to_admin(doc)}
+    if payload.trustDevice:
+        ua = request.headers.get("User-Agent", "")
+        resp["trustDeviceToken"] = await _issue_trusted_device(doc["_id"], ua)
+        resp["trustDeviceDays"] = TRUSTED_DEVICE_DAYS
+    return resp
+
+
+class TwoFAChallengeIn(BaseModel):
+    twoFactorToken: str
+
+
+@app.post("/api/admin/2fa/email/send")
+async def admin_2fa_email_send(admin: dict = Depends(require_challenge_2fa)) -> dict:
+    """Send a one-time 6-digit code to the admin's email as an alternative to the authenticator app."""
+    doc = await db.admins.find_one({"_id": admin["sub"]})
+    if not doc or not doc.get("twoFactorEnabled"):
+        raise HTTPException(status_code=400, detail="2FA is not enabled for this admin.")
+    email = (doc.get("email") or "").strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="No email is set for this admin. Ask a super admin to add one, or use your authenticator app.")
+
+    # Rate-limit: 30 s between resends
+    prev = await db.admin_email_otps.find_one({"_id": doc["_id"]})
+    if prev and prev.get("sent_at"):
+        try:
+            last = datetime.fromisoformat(prev["sent_at"])
+            wait = EMAIL_OTP_RESEND_SECONDS - int((datetime.utcnow() - last).total_seconds())
+            if wait > 0:
+                raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another code.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+    if not SMTP_USER or not SMTP_PASS:
+        raise HTTPException(status_code=500, detail="Email 2FA isn\u2019t available on this server (SMTP not configured). Use your authenticator app.")
+
+    code = _new_email_otp()
+    await _store_email_otp(doc["_id"], code)
+    try:
+        await send_email(email, "Your Essential Gemstones admin code", _email_otp_html(doc.get("username", "there"), code))
+    except Exception as e:
+        logging.exception("Failed to send admin 2FA email OTP")
+        raise HTTPException(status_code=502, detail=f"Couldn\u2019t send the email: {e}")
+
+    return {
+        "ok": True,
+        "sentTo": _obfuscate_email(email),
+        "expiresInMinutes": EMAIL_OTP_TTL_MINUTES,
+        "resendAfterSeconds": EMAIL_OTP_RESEND_SECONDS,
+    }
+
+
+@app.get("/api/admin/2fa/methods")
+async def admin_2fa_methods(admin: dict = Depends(require_challenge_2fa)) -> dict:
+    """List the 2FA methods available for the admin whose password was just verified."""
+    doc = await db.admins.find_one({"_id": admin["sub"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    methods = _available_2fa_methods(doc)
+    return {
+        "methods": methods,
+        "emailHint": _obfuscate_email(doc.get("email") or "") if doc.get("email") else None,
+        "hasBackupCodes": bool(doc.get("twoFactorBackupCodes")),
+    }
+
+
+# ---- Trusted device management ---- #
+
+
+@app.get("/api/admin/trusted-devices")
+async def list_trusted_devices(admin: dict = Depends(require_admin)) -> list[dict]:
+    cursor = db.admin_trusted_devices.find({"adminId": admin.get("sub")})
+    out: list[dict] = []
+    async for row in cursor:
+        out.append(
+            {
+                "id": row.get("_id"),
+                "userAgent": row.get("userAgent"),
+                "createdAt": row.get("createdAt"),
+                "lastUsedAt": row.get("lastUsedAt"),
+                "expiresAt": row.get("expiresAt"),
+            }
+        )
+    return out
+
+
+@app.delete("/api/admin/trusted-devices/{device_id}")
+async def revoke_trusted_device(device_id: str, admin: dict = Depends(require_admin)) -> dict:
+    res = await db.admin_trusted_devices.delete_one({"_id": device_id, "adminId": admin.get("sub")})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Trusted device not found")
+    return {"ok": True}
+
+
+@app.delete("/api/admin/trusted-devices")
+async def revoke_all_trusted_devices(admin: dict = Depends(require_admin)) -> dict:
+    res = await db.admin_trusted_devices.delete_many({"adminId": admin.get("sub")})
+    return {"ok": True, "revoked": res.deleted_count}
 
 
 @app.post("/api/admin/2fa/disable")
@@ -679,6 +961,9 @@ async def admin_2fa_disable(payload: TwoFactorVerifyIn, admin: dict = Depends(re
             }
         },
     )
+    # Revoke all trusted devices tied to this admin
+    await db.admin_trusted_devices.delete_many({"adminId": doc["_id"]})
+    await db.admin_email_otps.delete_one({"_id": doc["_id"]})
     return {"ok": True}
 
 
@@ -727,6 +1012,8 @@ async def admin_2fa_reset(admin_id: str, admin: dict = Depends(require_admin)) -
             }
         },
     )
+    await db.admin_trusted_devices.delete_many({"adminId": admin_id})
+    await db.admin_email_otps.delete_one({"_id": admin_id})
     return {"ok": True}
 
 

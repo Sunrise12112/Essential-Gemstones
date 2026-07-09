@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Lock, Gem, User, ShieldCheck, KeyRound, Copy, Check, RefreshCw } from 'lucide-react';
+import { Lock, Gem, User, ShieldCheck, KeyRound, Copy, Check, RefreshCw, Mail, Smartphone } from 'lucide-react';
 import api from '../lib/api';
 import { useToast } from '../hooks/use-toast';
 
 const PWD_MSG = 'Password must be at least 8 characters and include an uppercase letter, a lowercase letter, a number, and a symbol.';
+const TRUST_TOKEN_KEY = 'eg_admin_trust_token';
 
 function pwdIssues(p) {
   const list = [];
@@ -17,18 +18,22 @@ function pwdIssues(p) {
 }
 
 export default function AdminLogin() {
-  const [step, setStep] = useState('password'); // password | setup | challenge
+  const [step, setStep] = useState('password'); // password | setup | choose | totp | email | backup
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [setupToken, setSetupToken] = useState('');
   const [challengeToken, setChallengeToken] = useState('');
-  const [pendingUser, setPendingUser] = useState(null);
-  const [setupData, setSetupData] = useState(null); // {secret, qrDataUrl, provisioningUri, ...}
+  const [, setPendingUser] = useState(null);
+  const [setupData, setSetupData] = useState(null);
+  const [availableMethods, setAvailableMethods] = useState(['totp']);
+  const [emailHint, setEmailHint] = useState('');
   const [code, setCode] = useState('');
   const [backupCodes, setBackupCodes] = useState(null);
   const [copiedSecret, setCopiedSecret] = useState(false);
-  const [savedBackups, setSavedBackups] = useState(false);
+  const [trustDevice, setTrustDevice] = useState(false);
+  const [emailSentAt, setEmailSentAt] = useState(0);
+  const [resendCooldown, setResendCooldown] = useState(0);
   const codeRef = useRef(null);
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -38,33 +43,61 @@ export default function AdminLogin() {
   }, [navigate]);
 
   useEffect(() => {
-    if ((step === 'challenge' || (step === 'setup' && setupData)) && codeRef.current) {
+    if ((step === 'totp' || step === 'email' || step === 'backup' || (step === 'setup' && setupData)) && codeRef.current) {
       codeRef.current.focus();
     }
   }, [step, setupData]);
+
+  // Countdown for email resend
+  useEffect(() => {
+    if (resendCooldown <= 0) return undefined;
+    const id = setInterval(() => setResendCooldown((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(id);
+  }, [resendCooldown]);
 
   const submitPassword = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const { data } = await api.post('/admin/login', { username, password });
+      const trustToken = localStorage.getItem(TRUST_TOKEN_KEY) || '';
+      const { data } = await api.post(
+        '/admin/login',
+        { username, password },
+        trustToken ? { headers: { 'X-Admin-Trust-Token': trustToken } } : {},
+      );
+      if (data.status === 'ok' && data.token) {
+        // Trusted device let us skip 2FA
+        localStorage.setItem('eg_admin_token', data.token);
+        if (data.user) localStorage.setItem('eg_admin_user', JSON.stringify(data.user));
+        toast({ title: 'Welcome back', description: 'This device was trusted \u2014 skipped 2FA.' });
+        navigate('/admin/dashboard');
+        return;
+      }
       if (data.status === 'needs_2fa') {
         setChallengeToken(data.twoFactorToken);
-        setStep('challenge');
+        setAvailableMethods(Array.isArray(data.availableMethods) && data.availableMethods.length ? data.availableMethods : ['totp']);
+        setEmailHint(data.emailHint || '');
+        // If only one method, jump straight to it
+        if (!data.availableMethods || data.availableMethods.length <= 1) {
+          setStep('totp');
+        } else {
+          setStep('choose');
+        }
       } else if (data.status === 'needs_2fa_setup') {
         setSetupToken(data.setupToken);
         setPendingUser(data.user);
-        // Immediately fetch the QR
         const setupRes = await api.post('/admin/2fa/setup', {}, { headers: { Authorization: `Bearer ${data.setupToken}` } });
         setSetupData(setupRes.data);
         setStep('setup');
       } else if (data.token) {
-        // Legacy path (shouldn't happen anymore) — just log the admin in.
+        // Legacy path
         localStorage.setItem('eg_admin_token', data.token);
         if (data.user) localStorage.setItem('eg_admin_user', JSON.stringify(data.user));
         navigate('/admin/dashboard');
       }
     } catch (err) {
+      // If the trusted-device token got rejected somehow, drop it
+      if (err?.response?.status === 401) localStorage.removeItem(TRUST_TOKEN_KEY);
       toast({ title: 'Login failed', description: err?.response?.data?.detail || 'Incorrect username or password.', variant: 'destructive' });
     } finally {
       setLoading(false);
@@ -79,7 +112,6 @@ export default function AdminLogin() {
       localStorage.setItem('eg_admin_token', data.token);
       if (data.user) localStorage.setItem('eg_admin_user', JSON.stringify(data.user));
       setBackupCodes(data.backupCodes || []);
-      // Show backup codes view until admin confirms they saved them
     } catch (err) {
       toast({ title: 'Wrong code', description: err?.response?.data?.detail || 'Try the current 6-digit code from your authenticator.', variant: 'destructive' });
       setCode('');
@@ -88,13 +120,48 @@ export default function AdminLogin() {
     }
   };
 
-  const submitChallenge = async (e) => {
+  const sendEmailCode = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post('/admin/2fa/email/send', {}, { headers: { Authorization: `Bearer ${challengeToken}` } });
+      setEmailHint(data.sentTo || emailHint);
+      setEmailSentAt(Date.now());
+      setResendCooldown(data.resendAfterSeconds || 30);
+      toast({ title: 'Code sent', description: `We sent a 6-digit code to ${data.sentTo}. It expires in ${data.expiresInMinutes || 10} minutes.` });
+    } catch (err) {
+      toast({ title: 'Couldn\u2019t send code', description: err?.response?.data?.detail || 'Try your authenticator app instead.', variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const chooseMethod = async (method) => {
+    setCode('');
+    if (method === 'email') {
+      setStep('email');
+      await sendEmailCode();
+    } else if (method === 'backup') {
+      setStep('backup');
+    } else {
+      setStep('totp');
+    }
+  };
+
+  const submitChallenge = async (e, method) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const { data } = await api.post('/admin/2fa/login', { code }, { headers: { Authorization: `Bearer ${challengeToken}` } });
+      const { data } = await api.post(
+        '/admin/2fa/login',
+        { code, method, trustDevice },
+        { headers: { Authorization: `Bearer ${challengeToken}` } },
+      );
       localStorage.setItem('eg_admin_token', data.token);
       if (data.user) localStorage.setItem('eg_admin_user', JSON.stringify(data.user));
+      if (data.trustDeviceToken) {
+        localStorage.setItem(TRUST_TOKEN_KEY, data.trustDeviceToken);
+        toast({ title: 'Device trusted', description: `You won\u2019t need a code on this device for ${data.trustDeviceDays || 30} days.` });
+      }
       navigate('/admin/dashboard');
     } catch (err) {
       toast({ title: 'Wrong code', description: err?.response?.data?.detail || 'Try again with the current code.', variant: 'destructive' });
@@ -120,8 +187,14 @@ export default function AdminLogin() {
   };
 
   const proceedAfterBackups = () => {
-    setSavedBackups(true);
     navigate('/admin/dashboard');
+  };
+
+  const restart = () => {
+    setStep('password');
+    setCode('');
+    setChallengeToken('');
+    setTrustDevice(false);
   };
 
   return (
@@ -169,8 +242,8 @@ export default function AdminLogin() {
                   {copiedSecret ? <Check className="w-4 h-4 text-green-700" /> : <Copy className="w-4 h-4 text-[#6b4f3a]" />}
                 </button>
               </div>
-              <p className="text-[11px] text-[#8b6b4f]">Account: <span className="text-[#3d3128]">{setupData.accountName}</span> · Issuer: <span className="text-[#3d3128]">{setupData.issuer}</span></p>
-              <p className="text-[11px] text-[#8b6b4f]">6-digit codes · SHA1 · 30-second period (RFC 6238).</p>
+              <p className="text-[11px] text-[#8b6b4f]">Account: <span className="text-[#3d3128]">{setupData.accountName}</span> \u00b7 Issuer: <span className="text-[#3d3128]">{setupData.issuer}</span></p>
+              <p className="text-[11px] text-[#8b6b4f]">6-digit codes \u00b7 SHA1 \u00b7 30-second period (RFC 6238).</p>
             </div>
           </div>
           <form onSubmit={submitEnable} className="mt-6">
@@ -217,36 +290,129 @@ export default function AdminLogin() {
         </div>
       )}
 
-      {step === 'challenge' && (
+      {step === 'choose' && (
         <LoginCard>
           <div className="flex items-center gap-2 mb-1 text-[#6b4f3a]">
             <ShieldCheck className="w-5 h-5" />
             <span className="text-xs tracking-[0.2em] uppercase">Two-factor authentication</span>
           </div>
-          <h1 className="font-serif text-3xl text-[#1a1410] mb-2">Enter your code</h1>
-          <p className="text-sm text-[#5a4a3d] mb-6">Open Microsoft Authenticator and enter the 6-digit code for Essential Gemstones. Or use one of your backup codes.</p>
-          <form onSubmit={submitChallenge} data-testid="admin-2fa-challenge">
-            <div className="relative mb-5">
-              <KeyRound className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-[#8b6b4f]" />
-              <input
-                ref={codeRef}
-                inputMode="text"
-                maxLength={12}
-                value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
-                data-testid="admin-2fa-challenge-code"
-                className="w-full pl-11 pr-4 py-3.5 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-[#faf6f0] tracking-[0.3em] text-center text-lg"
-                placeholder="000000"
-                required
-                autoFocus
+          <h1 className="font-serif text-3xl text-[#1a1410] mb-2">How would you like to sign in?</h1>
+          <p className="text-sm text-[#5a4a3d] mb-6">Pick a method to receive your 6-digit code.</p>
+          <div className="space-y-3">
+            <MethodButton
+              testid="admin-2fa-choose-totp"
+              icon={<Smartphone className="w-5 h-5" />}
+              title="Use my authenticator app"
+              sub="Open Microsoft Authenticator (or similar) and enter the 6-digit code."
+              onClick={() => chooseMethod('totp')}
+            />
+            {availableMethods.includes('email') && (
+              <MethodButton
+                testid="admin-2fa-choose-email"
+                icon={<Mail className="w-5 h-5" />}
+                title="Email me a code"
+                sub={emailHint ? `Send a 6-digit code to ${emailHint}.` : 'Send a 6-digit code to your admin email.'}
+                onClick={() => chooseMethod('email')}
               />
-            </div>
+            )}
+            <MethodButton
+              testid="admin-2fa-choose-backup"
+              icon={<KeyRound className="w-5 h-5" />}
+              title="Use a backup code"
+              sub="Enter one of the 10 recovery codes you saved when you set up 2FA."
+              onClick={() => chooseMethod('backup')}
+            />
+          </div>
+          <button type="button" onClick={restart} className="w-full mt-6 text-xs text-[#8b6b4f] hover:text-[#1a1410]" data-testid="admin-2fa-choose-cancel">Use a different account</button>
+        </LoginCard>
+      )}
+
+      {step === 'totp' && (
+        <ChallengeCard
+          title="Enter your code"
+          hint="Open your authenticator app and enter the current 6-digit code for Essential Gemstones."
+          canSwitch={availableMethods.length > 1 || true}
+          onSwitch={() => setStep('choose')}
+          onCancel={restart}
+        >
+          <form onSubmit={(e) => submitChallenge(e, 'totp')} data-testid="admin-2fa-challenge">
+            <CodeInput
+              value={code}
+              onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
+              refEl={codeRef}
+              testid="admin-2fa-challenge-code"
+              placeholder="000000"
+              maxLength={6}
+            />
+            <TrustToggle trustDevice={trustDevice} setTrustDevice={setTrustDevice} />
             <button type="submit" disabled={loading || code.length < 6} data-testid="admin-2fa-challenge-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60">
               {loading ? 'Verifying\u2026' : 'Verify & sign in'}
             </button>
-            <button type="button" onClick={() => { setStep('password'); setCode(''); }} className="w-full mt-3 text-xs text-[#8b6b4f] hover:text-[#1a1410]">Use a different account</button>
           </form>
-        </LoginCard>
+        </ChallengeCard>
+      )}
+
+      {step === 'email' && (
+        <ChallengeCard
+          title="Check your email"
+          hint={`We sent a 6-digit code to ${emailHint || 'your admin email'}. It expires in 10 minutes.`}
+          canSwitch
+          onSwitch={() => setStep('choose')}
+          onCancel={restart}
+        >
+          <form onSubmit={(e) => submitChallenge(e, 'email')} data-testid="admin-2fa-email-form">
+            <CodeInput
+              value={code}
+              onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
+              refEl={codeRef}
+              testid="admin-2fa-email-code"
+              placeholder="000000"
+              maxLength={6}
+            />
+            <div className="flex items-center justify-between mb-4">
+              <button
+                type="button"
+                onClick={sendEmailCode}
+                disabled={loading || resendCooldown > 0}
+                data-testid="admin-2fa-email-resend"
+                className="text-xs text-[#6b4f3a] hover:text-[#1a1410] disabled:opacity-50"
+              >
+                {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : (emailSentAt ? 'Resend code' : 'Send code')}
+              </button>
+              <span className="text-[11px] text-[#8b6b4f]">Didn\u2019t get it? Check spam.</span>
+            </div>
+            <TrustToggle trustDevice={trustDevice} setTrustDevice={setTrustDevice} />
+            <button type="submit" disabled={loading || code.length !== 6} data-testid="admin-2fa-email-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60">
+              {loading ? 'Verifying\u2026' : 'Verify & sign in'}
+            </button>
+          </form>
+        </ChallengeCard>
+      )}
+
+      {step === 'backup' && (
+        <ChallengeCard
+          title="Enter a backup code"
+          hint="Use one of the 10 recovery codes you saved when you enabled 2FA. Each code works only once."
+          canSwitch
+          onSwitch={() => setStep('choose')}
+          onCancel={restart}
+        >
+          <form onSubmit={(e) => submitChallenge(e, 'backup')} data-testid="admin-2fa-backup-form">
+            <CodeInput
+              value={code}
+              onChange={(v) => setCode(v.toUpperCase().slice(0, 12))}
+              refEl={codeRef}
+              testid="admin-2fa-backup-input"
+              placeholder="XXXX-XXXX"
+              maxLength={12}
+              upper
+            />
+            <TrustToggle trustDevice={trustDevice} setTrustDevice={setTrustDevice} />
+            <button type="submit" disabled={loading || code.length < 8} data-testid="admin-2fa-backup-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60">
+              {loading ? 'Verifying\u2026' : 'Verify & sign in'}
+            </button>
+          </form>
+        </ChallengeCard>
       )}
     </div>
   );
@@ -263,5 +429,82 @@ function LoginCard({ children }) {
       </div>
       {children}
     </div>
+  );
+}
+
+function ChallengeCard({ title, hint, children, canSwitch, onSwitch, onCancel }) {
+  return (
+    <LoginCard>
+      <div className="flex items-center gap-2 mb-1 text-[#6b4f3a]">
+        <ShieldCheck className="w-5 h-5" />
+        <span className="text-xs tracking-[0.2em] uppercase">Two-factor authentication</span>
+      </div>
+      <h1 className="font-serif text-3xl text-[#1a1410] mb-2">{title}</h1>
+      <p className="text-sm text-[#5a4a3d] mb-6">{hint}</p>
+      {children}
+      <div className="flex items-center justify-between mt-4">
+        {canSwitch ? (
+          <button type="button" onClick={onSwitch} data-testid="admin-2fa-switch-method" className="text-xs text-[#6b4f3a] hover:text-[#1a1410]">Use a different method</button>
+        ) : <span />}
+        <button type="button" onClick={onCancel} className="text-xs text-[#8b6b4f] hover:text-[#1a1410]">Use a different account</button>
+      </div>
+    </LoginCard>
+  );
+}
+
+function CodeInput({ value, onChange, refEl, testid, placeholder, maxLength, upper }) {
+  return (
+    <div className="relative mb-4">
+      <KeyRound className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-[#8b6b4f]" />
+      <input
+        ref={refEl}
+        inputMode={upper ? 'text' : 'numeric'}
+        maxLength={maxLength}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        data-testid={testid}
+        className={`w-full pl-11 pr-4 py-3.5 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-[#faf6f0] text-center text-lg ${upper ? 'tracking-[0.3em]' : 'tracking-[0.4em]'}`}
+        placeholder={placeholder}
+        required
+        autoFocus
+      />
+    </div>
+  );
+}
+
+function TrustToggle({ trustDevice, setTrustDevice }) {
+  return (
+    <label className="flex items-start gap-2 mb-5 cursor-pointer select-none" data-testid="admin-2fa-trust-toggle-label">
+      <input
+        type="checkbox"
+        checked={trustDevice}
+        onChange={(e) => setTrustDevice(e.target.checked)}
+        className="mt-1 accent-[#6b4f3a]"
+        data-testid="admin-2fa-trust-checkbox"
+      />
+      <span className="text-xs text-[#5a4a3d] leading-relaxed">
+        <span className="text-[#3d3128] font-medium">Trust this device for 30 days.</span>{' '}
+        Skip 2FA on this browser until it expires. Only tick this on your own computer.
+      </span>
+    </label>
+  );
+}
+
+function MethodButton({ icon, title, sub, onClick, testid }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-testid={testid}
+      className="w-full flex items-start gap-3 p-4 border border-[#e8dfd1] rounded-2xl text-left hover:bg-[#faf6f0] transition-colors group"
+    >
+      <span className="w-10 h-10 rounded-full bg-[#faf6f0] border border-[#e8dfd1] flex items-center justify-center text-[#6b4f3a] group-hover:bg-white">
+        {icon}
+      </span>
+      <span className="flex-1">
+        <span className="block text-sm text-[#1a1410] font-medium">{title}</span>
+        <span className="block text-xs text-[#8b6b4f] mt-0.5">{sub}</span>
+      </span>
+    </button>
   );
 }

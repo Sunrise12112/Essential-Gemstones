@@ -1,0 +1,39 @@
+{
+  "summary": "Backend testing of the NEW alternative-2FA methods (email OTP + trusted-device 30-day bypass) added on top of the existing TOTP flow. Created /app/backend/tests/test_admin_2fa_alt_methods.py with 18 focused pytest cases across 8 test classes and got 18/18 PASS on first execution against the public URL (43.6s). Coverage matches the review checklist exactly: login response now returns availableMethods={'totp','email'} and obfuscated emailHint; GET /api/admin/2fa/methods returns methods+emailHint+hasBackupCodes with the challenge Bearer; POST /api/admin/2fa/email/send sends via Gmail SMTP (verified 200 + obfuscated sentTo + expiresInMinutes=10 + resendAfterSeconds=30 + row present in admin_email_otps with code_hash + attempts=0); a second /email/send within 30s returns 429 with 'wait Ns' detail; email-OTP success path verified end-to-end by directly injecting a KNOWN bcrypt-hashed code row into admin_email_otps and calling /api/admin/2fa/login with method='email' (returns full JWT that works on /admin/me and burns the row); 5 wrong email codes each return 401 and the 6th attempt with the CORRECT code still returns 401 because the row is deleted after the 5th failure; method='totp' works; method='totp'+trustDevice=true returns trustDeviceToken + trustDeviceDays=30; subsequent /api/admin/login with X-Admin-Trust-Token header returns status='ok', trustedDevice=true, no needs_2fa; GET /api/admin/trusted-devices lists id,userAgent,createdAt,lastUsedAt,expiresAt; DELETE /api/admin/trusted-devices/{id} removes just that device and re-login with the same trust token now correctly returns needs_2fa; DELETE /api/admin/trusted-devices (all) returns {ok, revoked:N} with N matching prior count and empty list afterwards; auto-detect fallback preserved (both TOTP and backup codes without a `method` field still work; explicit method='backup' still works); /api/admin/2fa/disable with valid TOTP purges admin_trusted_devices AND admin_email_otps for that admin (verified via direct Mongo counts); /api/admin/2fa/reset/{admin_id} by super admin also purges trusted devices + email OTPs on the target admin; backup-codes/regenerate still returns 10 new codes. Teardown verified: master admin ends with twoFactorEnabled=null, no trusted devices, no email OTP rows, no test_* admins left over — user's own login is unblocked.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_admin_2fa_alt_methods.py",
+    "/app/test_reports/pytest/pytest_2fa_alt.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py: _consume_email_otp is called for BOTH method='email' AND the auto-detect fallback branch. If a challenger picks method='totp' but happens to type 6 digits that match a stale email OTP row's hash, no cross-pollination happens (good) — but note that auto-detect calls _consume_email_otp AFTER a failed TOTP check, which increments the email-OTP attempts counter even when the user was actually trying a TOTP. Not a security issue but a UX quirk: a legitimate user mis-typing their TOTP 5 times will silently burn their pending email OTP. Consider only calling _consume_email_otp in auto-detect if there IS a pending email OTP row for that admin (i.e., short-circuit when db.admin_email_otps.find_one is None).",
+    "server.py L866-873: rate-limit block uses datetime.fromisoformat(prev['sent_at']) inside a broad try/except that silently swallows non-HTTPException errors. A corrupt/missing sent_at will bypass the 30s throttle. Consider defaulting to 0s remaining explicitly when parsing fails.",
+    "server.py L299: userAgent is stored truncated to [:255] but never HTML-escaped. The list endpoint returns it raw — if the trusted-devices UI ever renders it without escaping, this is an XSS vector (admin-controlled but still). Minor.",
+    "server.py L308 _check_trusted_device: on successful use, `lastUsedAt` is bumped but `expiresAt` is NOT slid forward — trust tokens are hard-30-days from creation, not from last use. That matches the review request (30 days) but consider documenting so users don't expect rolling renewal.",
+    "server.py has grown to 2574 lines (up from 2287 last iteration). Splitting into admin.py, admin_2fa.py, admin_trusted_devices.py etc. is overdue.",
+    "The /api/admin/2fa/methods response includes hasBackupCodes but the availableMethods list never includes 'backup'. If frontend consistency is desired, either include 'backup' in availableMethods or rename to something like `primaryMethods`. Not a bug — just an interface-vocabulary observation."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin_2fa_alt_methods.py (NEW)",
+    "/app/test_reports/pytest/pytest_2fa_alt.xml (NEW — junit output)"
+  ],
+  "success_rate": {
+    "backend": "100% (18/18 pytests passed on first run in 43.6s against public URL)",
+    "frontend": "not tested (review requested backend only)"
+  },
+  "test_credentials": "Master admin username=master password=1121211221. During testing 2FA was enabled on master via the /api/admin/2fa/setup + /enable flow; teardown fully disables 2FA on master and clears admin_trusted_devices + admin_email_otps so the user's own login is not blocked. Verified post-test Mongo state: twoFactorEnabled=None, trusted devices count=0, email OTP count=0, no residual test_* admins.",
+  "seed_data_creation": "Temporary admins with usernames matching ^test_ were created and deleted by the test's autouse fixture teardown (_cleanup_test_admins). Direct Mongo writes were used to (a) inject a KNOWN bcrypt-hashed email OTP row so the success path could be verified without reading an inbox, and (b) inject a fake email OTP row on a target admin to verify /api/admin/2fa/reset purges it. No production data was touched. Post-test verification: 0 orphan rows in either admin_trusted_devices or admin_email_otps.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Regression file for this feature is /app/backend/tests/test_admin_2fa_alt_methods.py — safe to re-run any time; it enrolls, tests, then wipes 2FA and all trust/otp rows on master via module-scoped autouse fixture. Runtime ~44s. Tests use several 1-sec sleeps between rapid TOTP generations to avoid replay collisions inside the same 30s TOTP window; if you compress them, you'll get sporadic 401s. The email-OTP-success test intentionally bypasses SMTP by writing a KNOWN bcrypt hash directly to admin_email_otps and calling /api/admin/2fa/login with method='email' — this is the pragmatic pattern documented in the review request. If a future run needs to test the FULL end-to-end email path with a real inbox, integrate an SMTP capture (e.g. mailhog) but note this test suite doesn't require it. If code changes touch /api/admin/2fa/login auto-detect logic, keep in mind the current order is TOTP → email OTP → backup code and that the email OTP branch increments attempts even on TOTP misses (see critical_code_review_comments).",
+  "rca_of_the_issue": "N/A — this iteration is a green-field feature test, not a bug fix. All 18 checks passed on first execution."
+}
