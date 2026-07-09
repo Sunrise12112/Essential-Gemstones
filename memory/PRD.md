@@ -64,3 +64,18 @@ See `/app/memory/test_credentials.md`
 ## Test Reports
 - `/app/test_reports/iteration_1.json` — 17/17 backend + 100% frontend pass on chat auth gating
 - pytest suite: `/app/backend/tests/test_chat_auth.py`
+
+## 2026-07-09 — "Edits revert" bug fixed (prices + hero video)
+User reported (production): price changes and uploaded hero videos save at first, then revert.
+Root causes + fixes:
+1. **Admin editor race (prices reverting)**: `AdminDashboard.jsx` seeded the form from hardcoded `defaultSite` before `/api/site` resolved, so Save pushed stale defaults over the DB. Fixed: seeding gated on `!siteLoading`; dashboard also calls `refresh()` on mount.
+2. **Ephemeral uploads (hero video disappearing)**: `/api/upload` wrote to local disk which production wipes on restart/redeploy. Fixed: uploads now go to Emergent object storage (records in `db.media`), `GET /api/uploads/{name}` serves from storage with 1yr immutable cache + legacy local-disk fallback. Startup migrates any legacy local files into storage.
+3. **Self-heal**: `get_site_doc` now deep-merges the DB doc over `default_site()` so partial section objects can never blank out a section (preview hero had been wiped to just a kicker; now auto-healed).
+Testing: iteration_4 (backend 5/5), iteration_5 (frontend race repro 1/1 PASS). Regression tests in `/app/backend/tests/test_site_and_uploads.py`.
+NOTE: User must REDEPLOY to production for these fixes to take effect; hero video must be re-uploaded once on production (old file was lost from ephemeral disk).
+
+### Backlog (unchanged)
+- P1: "Regenerate Backup Codes" button in Admin UI (backend endpoint exists)
+- P2: Trusted-device 30-day skip-2FA cookie
+- P2: Refactor server.py (>2200 lines) into routes/models modules
+- P3: Retry-with-backoff on object storage GET (occasional 5xx)
