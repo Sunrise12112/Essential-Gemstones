@@ -1,0 +1,31 @@
+{
+  "summary": "FRONTEND retest of the AdminDashboard race condition (iteration_4 bug). Fix is confirmed present in code (AdminDashboard.jsx L32 destructures `loading: siteLoading` from useSite; L88-92 seeding effect gated on `!siteLoading && site && !data` with deps [site, siteLoading, data]). Reproduced the exact iteration_4 scenario end-to-end and it now PASSES: (a) Seeded DB via PUT /api/site with marker values hero.kicker='RACE_MARKER_KICKER' and products.items[0].price='$77.77'. (b) Opened /admin/dashboard with a minted admin JWT injected in localStorage as 'eg_admin_token'. (c) Hero Kicker input showed 'RACE_MARKER_KICKER' and Product #1 Price showed '$77.77' — form correctly seeded from DB, NOT from hardcoded defaults (this was the iteration_4 failure mode). (d) Edited kicker to 'EDITED_MARKER_KICKER' and clicked 'Save changes' — 'Saved / Your changes are live.' toast appeared. (e) After full reload, kicker read 'EDITED_MARKER_KICKER' AND price read '$77.77' (i.e., the price was NOT silently reverted — the iteration_4 core symptom is fixed). DB spot-check confirmed both values persisted. (f) RESTORED DB via PUT to kicker='Handmade · Volcanic · Intentional' and price[0]='$24.00'. (g) Public homepage verified: hero kicker 'HANDMADE · VOLCANIC · INTENTIONAL' renders, prices $24.00 and $28.00 visible, hero oval image renders. The originally reported user bug 'edits save at first but eventually revert' is RESOLVED.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_site_and_uploads.py",
+    "/app/test_reports/pytest/pytest_site_uploads.xml (from iteration_4, unchanged)"
+  ],
+  "action_items": [
+    "None required for this bug — the fix is verified working. The optional hardening items from iteration_4 remain nice-to-haves and are re-listed under critical_code_review_comments below."
+  ],
+  "critical_code_review_comments": [
+    "OPTIONAL: SiteContext.jsx L61 still uses `useState(defaultSite)` which seeds every consumer with a hardcoded object before /api/site returns. The AdminDashboard fix guards specifically against this, but any NEW page/component that reads `site` synchronously on first render will get hardcoded values. Cleaner: `useState(null)` + `if (loading) return <Spinner/>` gates in consumers. Latent hazard.",
+    "OPTIONAL: SiteContext.jsx L68 `setSite({ ...defaultSite, ...data })` is a shallow merge. If a partial /api/site response ever came back (currently backend deep-merges so this is masked), nested sections would blank out. Mirror the backend `_deep_merge` on the client for defense-in-depth.",
+    "OPTIONAL: AdminDashboard.jsx L88-92 currently seeds `data` exactly once via `!data`. If an admin uses AI Writer or another tab writes to /site while the editor is open, `refresh()` updates `site` but `data` stays stale — a save from that stale `data` will silently roll back the other change. Consider re-seeding when a fresh `site` arrives (e.g., detect `site.updatedAt`/version change) or surfacing a 'site changed on server, discard local edits?' banner.",
+    "server.py has grown to 2287+ lines. Overdue for a split (uploads.py, admin.py, admin_2fa.py, site.py). Not blocking, but tech-debt.",
+    "server.py _storage_get: only invalidates + retries on 403; a small tenacity/backoff loop around 5xx would prevent occasional /api/uploads/<name> 502s from bubbling to end users."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not retested (already 100% in iteration_4)", "frontend": "100% (1/1 core flow — race bug FIXED, end-to-end persistence verified)"},
+  "test_credentials": "Minted admin JWT via /app/backend/.env JWT_SECRET (sub='test-admin'); no 2FA enrollment on master (per review instructions).",
+  "seed_data_creation": "During reproduction: hero.kicker='RACE_MARKER_KICKER' then 'EDITED_MARKER_KICKER'; products.items[0].price='$77.77'. RESTORED at end of test: hero.kicker='Handmade · Volcanic · Intentional', products.items[0].price='$24.00'. products.items[1].price left unchanged at '$28.00'. Public homepage confirmed rendering restored values. No orphan data introduced this iteration.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The AdminDashboard race is confirmed fixed. Regression scenario used: (1) mint JWT with the snippet in the review request; (2) PUT /api/site with marker kicker + price; (3) open /admin/dashboard with token in localStorage['eg_admin_token']; (4) expand Hero + Products sections; (5) verify inputs show DB values, not hardcoded defaults; (6) edit + Save; (7) reload; (8) verify BOTH the edited field and any other DB-only fields persist. Test helper script left at /tmp/seed_marker.py (env TOKEN=...) with subcommands seed|restore|check. If code churn happens near AdminDashboard.jsx or SiteContext.jsx, re-run this scenario — it took ~3 mins.",
+  "rca_of_the_issue": "ROOT CAUSE was in AdminDashboard.jsx: the effect that seeded the editor's `data` state from `site` was guarded only on `!data`, but SiteContext initializes `site` to a hardcoded `defaultSite` constant, so `site` is truthy on the very first render (BEFORE /api/site resolves). The effect fired immediately with the hardcoded defaults, and its `!data` guard then blocked any re-seed once real DB values arrived. Save subsequently PUT the hardcoded defaults to /api/site, silently overwriting customizations. FIX (verified applied): destructure `loading: siteLoading` from useSite() and gate the seeding effect on `!siteLoading && site && !data` with `siteLoading` in the deps array. This defers seeding until /api/site has actually resolved. Confirmed with an end-to-end reproduction of the iteration_4 failure — it now passes at every step."
+}

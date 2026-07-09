@@ -86,8 +86,10 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => {
-    if (site && !data) setData(JSON.parse(JSON.stringify(site)));
-  }, [site, data]);
+    // Only seed the editor once the real site data has loaded — never from defaults,
+    // otherwise saving would overwrite the DB with stale/default content.
+    if (!siteLoading && site && !data) setData(JSON.parse(JSON.stringify(site)));
+  }, [site, siteLoading, data]);
 
   if (!data) {
     return <div className="min-h-screen flex items-center justify-center bg-[#faf6f0]"><RefreshCw className="w-6 h-6 animate-spin text-[#6b4f3a]" /></div>;
