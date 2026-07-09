@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Sparkles, X, Send, Loader2, ClipboardCheck, Undo2, History, Plus, Trash2, Pencil, Check, Mail, Wand2, MessageSquare } from 'lucide-react';
+import { Sparkles, X, Send, Loader2, ClipboardCheck, Undo2, History, Plus, Trash2, Pencil, Check, Mail, Wand2, MessageSquare, Users } from 'lucide-react';
 import api, { API } from '../../lib/api';
 import { useToast } from '../../hooks/use-toast';
 import { useSite } from '../../context/SiteContext';
@@ -83,6 +83,7 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
         failed: data.failed || [],
         snapshot: data.snapshot || null,
         emailDraft: data.emailDraft || null,
+        adminAction: data.adminAction || null,
       };
       setMessages((s) => {
         const list = [...s];
@@ -98,6 +99,13 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
         toast({ title: 'Site updated', description: data.reply || `Applied ${data.applied.length} change(s).` });
       } else if (kind === 'email' && data.emailDraft) {
         toast({ title: 'Draft ready', description: `Preview below, then confirm to send to ${data.emailDraft.recipientCount || 0} subscriber(s).` });
+      } else if (kind === 'admins' && data.adminAction) {
+        window.dispatchEvent(new CustomEvent('eg:admin-managed', { detail: data.adminAction }));
+        if (data.adminAction.ok) {
+          toast({ title: 'Admin updated', description: data.adminAction.summary || 'Done.' });
+        } else {
+          toast({ title: 'Couldn\u2019t update admin', description: data.adminAction.error || 'Try again.', variant: 'destructive' });
+        }
       }
     } catch (e) {
       const detail = e?.response?.data?.detail || e.message || 'Try again';
@@ -197,8 +205,8 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
 
   if (!open) return null;
 
-  const kindIcon = (k) => k === 'edit' ? <Wand2 className="w-3 h-3" /> : k === 'email' ? <Mail className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />;
-  const kindLabel = (k) => k === 'edit' ? 'Site edit' : k === 'email' ? 'Email draft' : 'Reply';
+  const kindIcon = (k) => k === 'edit' ? <Wand2 className="w-3 h-3" /> : k === 'email' ? <Mail className="w-3 h-3" /> : k === 'admins' ? <Users className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />;
+  const kindLabel = (k) => k === 'edit' ? 'Site edit' : k === 'email' ? 'Email draft' : k === 'admins' ? 'Admin action' : 'Reply';
 
   return (
     <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-[#1a1410]/60 backdrop-blur-sm">
@@ -340,6 +348,34 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
                       <div className="text-xs text-[#3d3128] italic">
                         Sent to {m.sendStats?.sent || 0} subscriber(s){m.sendStats?.failed ? ` — ${m.sendStats.failed} failed` : ''}.
                       </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Admin management: show what was done */}
+                {m.role === 'assistant' && m.kind === 'admins' && m.adminAction && (
+                  <div className="mt-3 pt-3 border-t border-[#e8dfd1] space-y-2" data-testid={`admin-ai-admin-action-${i}`}>
+                    {m.adminAction.ok ? (
+                      <>
+                        <div className="text-[11px] tracking-[0.15em] uppercase text-[#6b4f3a] inline-flex items-center gap-1">
+                          <Check className="w-3 h-3" /> {m.adminAction.action || 'done'}
+                        </div>
+                        {m.adminAction.target && (
+                          <div className="text-xs text-[#3d3128] bg-[#faf6f0] border border-[#e8dfd1] rounded-lg px-3 py-2 space-y-0.5">
+                            <div><span className="text-[#8b6b4f]">Username:</span> <span className="font-mono">{m.adminAction.target.username}</span></div>
+                            {m.adminAction.target.email && <div><span className="text-[#8b6b4f]">Email:</span> <span className="font-mono">{m.adminAction.target.email}</span></div>}
+                            {m.adminAction.target.isSuper && <div className="text-[#c9a876]">Super admin</div>}
+                          </div>
+                        )}
+                        {m.adminAction.generatedPassword && (
+                          <div className="text-xs bg-amber-50 border border-amber-200 text-amber-900 rounded-lg px-3 py-2">
+                            <div className="uppercase text-[10px] tracking-wider mb-1">Temporary password (share once, they must change it)</div>
+                            <code className="font-mono text-sm">{m.adminAction.generatedPassword}</code>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{m.adminAction.error || 'Something went wrong.'}</div>
                     )}
                   </div>
                 )}

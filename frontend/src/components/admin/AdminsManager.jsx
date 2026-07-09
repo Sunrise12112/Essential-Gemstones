@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Trash2, Plus, Save, ShieldCheck, RefreshCw, KeyRound, ShieldOff } from 'lucide-react';
+import { Trash2, Plus, Save, ShieldCheck, RefreshCw, KeyRound, ShieldOff, Mail, Pencil, X } from 'lucide-react';
 import api from '../../lib/api';
 import { useToast } from '../../hooks/use-toast';
 import { Field, TextInput } from './FormControls';
@@ -32,7 +32,7 @@ export default function AdminsManager({ currentUser }) {
   const [perms, setPerms] = useState({ sectionPermissions: [], metaPermissions: [], all: [] });
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [newAdmin, setNewAdmin] = useState({ username: '', password: '', permissions: [], isSuper: false });
+  const [newAdmin, setNewAdmin] = useState({ username: '', email: '', password: '', permissions: [], isSuper: false });
   const { toast } = useToast();
 
   const load = async () => {
@@ -50,6 +50,12 @@ export default function AdminsManager({ currentUser }) {
 
   useEffect(() => { load(); }, []);
 
+  useEffect(() => {
+    const handler = () => load();
+    window.addEventListener('eg:admin-managed', handler);
+    return () => window.removeEventListener('eg:admin-managed', handler);
+  }, []);
+
   const toggleNewPerm = (k) => {
     setNewAdmin((s) => ({
       ...s,
@@ -64,21 +70,43 @@ export default function AdminsManager({ currentUser }) {
       toast({ title: 'Missing info', description: 'Username and password are required.', variant: 'destructive' });
       return;
     }
+    const email = (newAdmin.email || '').trim();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      toast({ title: 'Email required', description: 'Enter a valid email so they can receive 2FA codes.', variant: 'destructive' });
+      return;
+    }
     const issues = pwdIssues(newAdmin.password);
     if (issues.length) {
-      toast({ title: 'Weak password', description: issues.join(' · '), variant: 'destructive' });
+      toast({ title: 'Weak password', description: issues.join(' \u00b7 '), variant: 'destructive' });
       return;
     }
     setCreating(true);
     try {
-      await api.post('/admin/admins', newAdmin);
+      await api.post('/admin/admins', { ...newAdmin, email });
       toast({ title: 'Admin created', description: `${newAdmin.username} can sign in and will be prompted to enroll in 2FA on first login.` });
-      setNewAdmin({ username: '', password: '', permissions: [], isSuper: false });
+      setNewAdmin({ username: '', email: '', password: '', permissions: [], isSuper: false });
       load();
     } catch (e) {
       toast({ title: 'Could not create', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
     } finally {
       setCreating(false);
+    }
+  };
+
+  const updateEmail = async (a, newEmail) => {
+    const email = (newEmail || '').trim();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      toast({ title: 'Invalid email', description: 'Enter a valid email address.', variant: 'destructive' });
+      return false;
+    }
+    try {
+      await api.put(`/admin/admins/${a.id}`, { email });
+      toast({ title: 'Email updated', description: `${a.username} \u2192 ${email}` });
+      load();
+      return true;
+    } catch (e) {
+      toast({ title: 'Update failed', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
+      return false;
     }
   };
 
@@ -158,6 +186,7 @@ export default function AdminsManager({ currentUser }) {
             allPerms={perms.all}
             onUpdatePerms={(p) => updatePerms(a, p)}
             onSetSuper={(s) => setSuper(a, s)}
+            onUpdateEmail={(v) => updateEmail(a, v)}
             onResetPassword={() => resetPassword(a)}
             onReset2fa={() => reset2fa(a)}
             onRemove={() => removeAdmin(a)}
@@ -170,11 +199,12 @@ export default function AdminsManager({ currentUser }) {
       <div className="border border-[#e8dfd1] rounded-2xl p-5 bg-[#faf6f0]">
         <h4 className="font-serif text-lg text-[#1a1410] mb-4 flex items-center gap-2"><Plus className="w-4 h-4" /> Add new admin</h4>
         <div className="grid sm:grid-cols-2 gap-3 mb-2">
-          <Field label="Username"><TextInput value={newAdmin.username} onChange={(v) => setNewAdmin({ ...newAdmin, username: v })} placeholder="e.g. mom" /></Field>
-          <Field label="Password"><TextInput value={newAdmin.password} onChange={(v) => setNewAdmin({ ...newAdmin, password: v })} placeholder="choose a strong password" type="text" /></Field>
+          <Field label="Username"><TextInput value={newAdmin.username} onChange={(v) => setNewAdmin({ ...newAdmin, username: v })} placeholder="e.g. mom" data-testid="new-admin-username" /></Field>
+          <Field label="Email (required)"><TextInput value={newAdmin.email} onChange={(v) => setNewAdmin({ ...newAdmin, email: v })} placeholder="mom@example.com" type="email" data-testid="new-admin-email" /></Field>
         </div>
+        <Field label="Password"><TextInput value={newAdmin.password} onChange={(v) => setNewAdmin({ ...newAdmin, password: v })} placeholder="choose a strong password" type="text" data-testid="new-admin-password" /></Field>
         <PasswordChecklist password={newAdmin.password} />
-        <p className="text-xs text-[#8b6b4f] mt-3 mb-4"><ShieldCheck className="w-3 h-3 inline mr-1" /> They will be asked to set up an authenticator app on their first login.</p>
+        <p className="text-xs text-[#8b6b4f] mt-3 mb-4"><ShieldCheck className="w-3 h-3 inline mr-1" /> They\u2019ll set up an authenticator app on first login, and can also receive 2FA codes at this email.</p>
         <label className="flex items-center gap-2 text-sm text-[#3d3128] mb-4 cursor-pointer">
           <input type="checkbox" checked={newAdmin.isSuper} onChange={(e) => setNewAdmin({ ...newAdmin, isSuper: e.target.checked })} className="rounded" />
           <ShieldCheck className="w-4 h-4 text-[#c9a876]" /> Super admin (full access, can manage other admins)
@@ -220,13 +250,20 @@ function PasswordChecklist({ password }) {
   );
 }
 
-function AdminRow({ admin, allPerms, onUpdatePerms, onSetSuper, onResetPassword, onReset2fa, onRemove, isCurrentUser }) {
+function AdminRow({ admin, allPerms, onUpdatePerms, onSetSuper, onUpdateEmail, onResetPassword, onReset2fa, onRemove, isCurrentUser }) {
   const [permissions, setPermissions] = useState(admin.permissions || []);
   const [editing, setEditing] = useState(false);
+  const [emailEditing, setEmailEditing] = useState(false);
+  const [emailValue, setEmailValue] = useState(admin.email || '');
   const dirty = JSON.stringify([...permissions].sort()) !== JSON.stringify([...(admin.permissions || [])].sort());
 
   const toggle = (k) => {
     setPermissions((s) => s.includes(k) ? s.filter((x) => x !== k) : [...s, k]);
+  };
+
+  const saveEmail = async () => {
+    const ok = await onUpdateEmail(emailValue);
+    if (ok) setEmailEditing(false);
   };
 
   return (
@@ -243,8 +280,29 @@ function AdminRow({ admin, allPerms, onUpdatePerms, onSetSuper, onResetPassword,
             )}
             {isCurrentUser && <span className="text-xs text-[#8b6b4f]">(you)</span>}
           </div>
-          {admin.email && <p className="text-xs text-[#8b6b4f] mt-0.5">{admin.email}</p>}
-          {admin.createdAt && <p className="text-xs text-[#8b6b4f]">Created {new Date(admin.createdAt).toLocaleDateString()}</p>}
+          <div className="flex items-center gap-2 mt-1" data-testid={`admin-row-email-${admin.id}`}>
+            <Mail className="w-3 h-3 text-[#8b6b4f]" />
+            {emailEditing ? (
+              <>
+                <input
+                  type="email"
+                  value={emailValue}
+                  onChange={(e) => setEmailValue(e.target.value)}
+                  className="text-xs px-2 py-1 border border-[#e8dfd1] rounded-lg bg-[#faf6f0] focus:outline-none focus:border-[#6b4f3a] w-56"
+                  data-testid={`admin-row-email-input-${admin.id}`}
+                  autoFocus
+                />
+                <button onClick={saveEmail} className="text-xs px-2 py-1 bg-[#1a1410] text-[#faf6f0] rounded-md hover:bg-[#6b4f3a]" data-testid={`admin-row-email-save-${admin.id}`}><Save className="w-3 h-3" /></button>
+                <button onClick={() => { setEmailEditing(false); setEmailValue(admin.email || ''); }} className="text-xs px-2 py-1 border border-[#e8dfd1] rounded-md hover:bg-[#faf6f0]"><X className="w-3 h-3" /></button>
+              </>
+            ) : (
+              <>
+                <span className="text-xs text-[#5a4a3d]">{admin.email || <em className="text-[#c17b5c]">no email set</em>}</span>
+                <button onClick={() => setEmailEditing(true)} className="text-xs px-1.5 py-0.5 text-[#6b4f3a] hover:text-[#1a1410] inline-flex items-center gap-0.5" data-testid={`admin-row-edit-email-${admin.id}`} title="Edit email"><Pencil className="w-3 h-3" /></button>
+              </>
+            )}
+          </div>
+          {admin.createdAt && <p className="text-xs text-[#8b6b4f] mt-1">Created {new Date(admin.createdAt).toLocaleDateString()}</p>}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button onClick={onResetPassword} className="text-xs px-3 py-1.5 border border-[#e8dfd1] rounded-lg hover:bg-[#faf6f0] inline-flex items-center gap-1"><KeyRound className="w-3 h-3" /> Reset password</button>

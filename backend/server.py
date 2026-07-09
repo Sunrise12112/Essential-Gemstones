@@ -92,14 +92,14 @@ class LoginIn(BaseModel):
 class AdminCreate(BaseModel):
     username: str
     password: str
-    email: Optional[str] = None
+    email: EmailStr
     permissions: list[str] = []
     isSuper: bool = False
 
 
 class AdminUpdate(BaseModel):
     password: Optional[str] = None
-    email: Optional[str] = None
+    email: Optional[EmailStr] = None
     permissions: Optional[list[str]] = None
     isSuper: Optional[bool] = None
 
@@ -1056,16 +1056,22 @@ async def create_admin(payload: AdminCreate, admin: dict = Depends(require_admin
     if not username or not payload.password:
         raise HTTPException(status_code=400, detail="Username and password required")
     validate_password_strength(payload.password)
+    email = str(payload.email).strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
     existing = await db.admins.find_one({"username": username})
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
+    dupe_email = await db.admins.find_one({"email": email})
+    if dupe_email:
+        raise HTTPException(status_code=400, detail="Another admin already uses that email")
     perms = [p for p in (payload.permissions or []) if p in ALL_PERMS]
     if payload.isSuper:
         perms = ALL_PERMS.copy()
     doc = {
         "_id": str(uuid.uuid4()),
         "username": username,
-        "email": (payload.email or "").strip().lower() or None,
+        "email": email,
         "passwordHash": hash_password(payload.password),
         "permissions": perms,
         "isSuper": bool(payload.isSuper),
@@ -1090,7 +1096,14 @@ async def update_admin(admin_id: str, payload: AdminUpdate, admin: dict = Depend
         validate_password_strength(payload.password)
         update["passwordHash"] = hash_password(payload.password)
     if payload.email is not None:
-        update["email"] = (payload.email or "").strip().lower() or None
+        new_email = str(payload.email).strip().lower()
+        if not new_email:
+            raise HTTPException(status_code=400, detail="Email is required")
+        if new_email != (doc.get("email") or "").lower():
+            dupe = await db.admins.find_one({"email": new_email, "_id": {"$ne": admin_id}})
+            if dupe:
+                raise HTTPException(status_code=400, detail="Another admin already uses that email")
+        update["email"] = new_email
     # Only super admins can change permissions / super flag
     if admin.get("isSuper"):
         if payload.permissions is not None:
@@ -2353,23 +2366,193 @@ class AdminAIIn(BaseModel):
     sessionId: Optional[str] = None
 
 
-def _unified_admin_prompt(site_json: str, subscriber_count: int) -> str:
+async def _apply_admin_action(action_obj: dict, caller: dict) -> dict:
+    """Execute an admin-management action requested by the Admin AI.
+    Only reachable when the caller is a super admin (checked in the endpoint).
+    Returns a shape suitable for the frontend: {ok, summary?, error?, target?, generatedPassword?}.
+    """
+    if not isinstance(action_obj, dict):
+        return {"ok": False, "error": "no action provided"}
+    action = str(action_obj.get("action") or "").strip().lower()
+    if action not in {"create", "update", "delete", "resetpassword", "reset2fa"}:
+        return {"ok": False, "error": f"unknown action '{action}'"}
+
+    async def _find_target() -> Optional[dict]:
+        target_id = str(action_obj.get("id") or "").strip()
+        if target_id:
+            return await db.admins.find_one({"_id": target_id})
+        target_username = str(action_obj.get("username") or "").strip().lower()
+        if target_username:
+            return await db.admins.find_one({"username": target_username})
+        return None
+
+    if action == "create":
+        username = str(action_obj.get("username") or "").strip().lower()
+        email = str(action_obj.get("email") or "").strip().lower()
+        password = str(action_obj.get("password") or "").strip()
+        generated = False
+        if not username:
+            return {"ok": False, "error": "username is required to create an admin"}
+        if not email or "@" not in email:
+            return {"ok": False, "error": "a valid email is required to create an admin"}
+        if not password:
+            # generate a strong one
+            alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+            password = "".join(_secrets.choice(alphabet) for _ in range(14)) + "!"
+            generated = True
+        try:
+            validate_password_strength(password)
+        except HTTPException as exc:
+            return {"ok": False, "error": exc.detail}
+        if await db.admins.find_one({"username": username}):
+            return {"ok": False, "error": f"an admin named '{username}' already exists"}
+        if await db.admins.find_one({"email": email}):
+            return {"ok": False, "error": f"another admin already uses {email}"}
+        is_super_new = bool(action_obj.get("isSuper"))
+        perms = [p for p in (action_obj.get("permissions") or []) if p in ALL_PERMS]
+        if is_super_new:
+            perms = ALL_PERMS.copy()
+        new_doc = {
+            "_id": str(uuid.uuid4()),
+            "username": username,
+            "email": email,
+            "passwordHash": hash_password(password),
+            "permissions": perms,
+            "isSuper": is_super_new,
+            "twoFactorEnabled": False,
+            "createdAt": datetime.utcnow().isoformat(),
+        }
+        await db.admins.insert_one(new_doc)
+        summary = f"Created admin '{username}' ({email})."
+        if generated:
+            summary += f" Temporary password: {password} (share this once; they should change it after signing in)."
+        return {
+            "ok": True,
+            "action": "create",
+            "target": doc_to_admin(new_doc),
+            "summary": summary,
+            "generatedPassword": password if generated else None,
+        }
+
+    target = await _find_target()
+    if not target:
+        return {"ok": False, "error": "target admin not found"}
+    # Self-preservation: refuse to delete or demote the caller from a super-only account
+    is_self = target["_id"] == caller.get("sub")
+
+    if action == "update":
+        update: dict[str, Any] = {}
+        if action_obj.get("email") is not None:
+            new_email = str(action_obj.get("email") or "").strip().lower()
+            if not new_email or "@" not in new_email:
+                return {"ok": False, "error": "email must be a valid address"}
+            if new_email != (target.get("email") or "").lower():
+                dupe = await db.admins.find_one({"email": new_email, "_id": {"$ne": target["_id"]}})
+                if dupe:
+                    return {"ok": False, "error": f"another admin already uses {new_email}"}
+            update["email"] = new_email
+        if action_obj.get("permissions") is not None:
+            update["permissions"] = [p for p in action_obj["permissions"] if p in ALL_PERMS]
+        if action_obj.get("isSuper") is not None:
+            new_super = bool(action_obj.get("isSuper"))
+            if is_self and not new_super and target.get("isSuper"):
+                return {"ok": False, "error": "you can\u2019t remove your own super-admin flag"}
+            update["isSuper"] = new_super
+            if new_super:
+                update["permissions"] = ALL_PERMS.copy()
+        if action_obj.get("username") is not None and str(action_obj.get("username")).strip().lower() != target.get("username"):
+            # Explicit rename is allowed
+            new_username = str(action_obj["username"]).strip().lower()
+            if not new_username:
+                return {"ok": False, "error": "username can\u2019t be blank"}
+            if await db.admins.find_one({"username": new_username, "_id": {"$ne": target["_id"]}}):
+                return {"ok": False, "error": f"another admin is already named '{new_username}'"}
+            update["username"] = new_username
+        if not update:
+            return {"ok": False, "error": "nothing to update"}
+        await db.admins.update_one({"_id": target["_id"]}, {"$set": update})
+        fresh = await db.admins.find_one({"_id": target["_id"]})
+        return {"ok": True, "action": "update", "target": doc_to_admin(fresh), "summary": f"Updated '{fresh['username']}': {', '.join(update.keys())}."}
+
+    if action == "delete":
+        if is_self:
+            return {"ok": False, "error": "you can\u2019t delete your own account"}
+        await db.admins.delete_one({"_id": target["_id"]})
+        await db.admin_trusted_devices.delete_many({"adminId": target["_id"]})
+        await db.admin_email_otps.delete_one({"_id": target["_id"]})
+        return {"ok": True, "action": "delete", "summary": f"Deleted admin '{target.get('username')}'."}
+
+    if action == "resetpassword":
+        password = str(action_obj.get("password") or "").strip()
+        generated = False
+        if not password:
+            alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+            password = "".join(_secrets.choice(alphabet) for _ in range(14)) + "!"
+            generated = True
+        try:
+            validate_password_strength(password)
+        except HTTPException as exc:
+            return {"ok": False, "error": exc.detail}
+        await db.admins.update_one({"_id": target["_id"]}, {"$set": {"passwordHash": hash_password(password)}})
+        summary = f"Reset password for '{target.get('username')}'."
+        if generated:
+            summary += f" Temporary password: {password}"
+        return {"ok": True, "action": "resetPassword", "summary": summary, "generatedPassword": password if generated else None}
+
+    if action == "reset2fa":
+        await db.admins.update_one(
+            {"_id": target["_id"]},
+            {"$unset": {"twoFactorSecret": "", "twoFactorEnabled": "", "twoFactorBackupCodes": "", "twoFactorPendingSecret": "", "twoFactorEnabledAt": ""}},
+        )
+        await db.admin_trusted_devices.delete_many({"adminId": target["_id"]})
+        await db.admin_email_otps.delete_one({"_id": target["_id"]})
+        return {"ok": True, "action": "reset2fa", "summary": f"Reset 2FA for '{target.get('username')}'. They\u2019ll enroll again on their next login."}
+
+    return {"ok": False, "error": f"unhandled action '{action}'"}
+
+
+def _unified_admin_prompt(site_json: str, subscriber_count: int, admins_json: str, is_super: bool) -> str:
     schema_keys = list(default_site().keys())
+    admins_block = (
+        "\n\nCURRENT ADMINS (JSON list, passwordHash excluded):\n" + admins_json
+        if is_super
+        else ""
+    )
+    admins_action_doc = (
+        "- 'admins' \u2192 the admin wants to create, edit, delete, reset the password, or reset 2FA of another admin account. "
+        "ONLY available to super admins. Fill 'admins' with a single action object. Confirm the change in 'reply'.\n"
+        "  Shape:\n"
+        "  { \"action\": \"create\" | \"update\" | \"delete\" | \"resetPassword\" | \"reset2fa\",\n"
+        "    \"id\": \"<admin_id>\",            // required for update/delete/resetPassword/reset2fa\n"
+        "    \"username\": \"<new-or-existing username>\",  // required for create; optional lookup for update if id unknown\n"
+        "    \"email\": \"<email@example.com>\", // required for create, optional for update\n"
+        "    \"password\": \"<strong password>\", // required for create and resetPassword; must meet policy\n"
+        "    \"permissions\": [\"hero\", \"products\", ...],  // optional, ignored when isSuper=true\n"
+        "    \"isSuper\": true|false            // optional\n"
+        "  }\n"
+        "  Password policy: min 8 chars, one uppercase, one lowercase, one digit, one symbol. If the admin asks you "
+        "to create an admin without giving a password, generate a strong random one and INCLUDE it in 'reply' so they can share it.\n"
+        "  Email is REQUIRED when creating an admin. Never make one up \u2014 ask the admin for it if they didn't provide one (kind='chat').\n"
+        if is_super
+        else "- 'admins' \u2192 NOT available. You are not a super admin. Reply as 'chat' and explain the caller needs super-admin rights.\n"
+    )
     return (
         "You are the SITE OWNER'S personal AI for Essential Gemstones, a handmade lava-stone bracelet brand "
         "founded by Luca (he/him, nine years old). You act on behalf of the admin. You can hold a normal "
-        "conversation, draft copy, EDIT the live site, or SEND an email broadcast to every newsletter subscriber. "
-        "Choose the ONE action that best fits the admin's request.\n\n"
+        "conversation, draft copy, EDIT the live site, SEND an email broadcast to every newsletter subscriber, "
+        "or (super admins only) MANAGE OTHER ADMIN ACCOUNTS. Choose the ONE action that best fits the admin's request.\n\n"
         "VOICE: warm, earthy, sincere, plain and grounded. Short sentences. No exclamation-heavy hype, no emojis. "
         "Never refer to Luca as she/her/they. Never lead descriptions of Luca with his age.\n\n"
         "OUTPUT FORMAT: Reply with ONLY a single JSON object (no prose outside JSON, no code fences). Exact shape:\n"
         "{\n"
-        '  "kind": "chat" | "edit" | "email",\n'
+        '  "kind": "chat" | "edit" | "email" | "admins",\n'
         '  "reply": "<what to show the admin>",\n'
         '  "edits": [ {"path": "<dotted path>", "value": <new value>} ],\n'
-        '  "email": { "subject": "<subject line>", "html": "<well-formatted HTML body>" }\n'
+        '  "email": { "subject": "<subject line>", "html": "<well-formatted HTML body>" },\n'
+        '  "admins": { "action": "...", ... }\n'
         "}\n"
-        "Only include 'edits' when kind='edit'. Only include 'email' when kind='email'. 'reply' is ALWAYS required.\n\n"
+        "Only include 'edits' when kind='edit'. Only include 'email' when kind='email'. Only include 'admins' when kind='admins'. "
+        "'reply' is ALWAYS required.\n\n"
         "WHEN TO PICK EACH kind:\n"
         "- 'chat'  \u2192 the admin is asking a question, brainstorming, or wants you to draft copy without applying it. "
         "Put the draft or answer in 'reply'.\n"
@@ -2381,10 +2564,11 @@ def _unified_admin_prompt(site_json: str, subscriber_count: int) -> str:
         "confirmation in 'reply' like: 'Ready to send to your subscribers. Say \"send it\" to confirm.' "
         "IMPORTANT: Pick kind='email' whenever the admin says anything like 'draft an email', 'send an email', "
         "'email my subscribers', 'newsletter', 'broadcast', 'announce to subscribers', or 'let my list know'. "
-        "Even if the admin says 'draft' — if the audience is subscribers/list/newsletter, ALWAYS use kind='email' "
+        "Even if the admin says 'draft' \u2014 if the audience is subscribers/list/newsletter, ALWAYS use kind='email' "
         "(the admin will confirm before it sends). Only fall back to kind='chat' when the admin is writing copy that is NOT "
-        "meant to be sent as an email (e.g., product blurbs, hero copy, About text).\n\n"
-        "EDIT PATH SYNTAX:\n"
+        "meant to be sent as an email (e.g., product blurbs, hero copy, About text).\n"
+        + admins_action_doc +
+        "\nEDIT PATH SYNTAX:\n"
         "- Dot notation to descend into objects. Bracket [n] to select an array index. "
         "Example: products.items[0].description, sectionVisibility.faq, sectionOrder.\n"
         "- To replace an entire array, set path to the array key and value to the new array.\n"
@@ -2392,8 +2576,10 @@ def _unified_admin_prompt(site_json: str, subscriber_count: int) -> str:
         "RULES:\n"
         "- Do EXACTLY what the admin asked \u2014 no more, no less. Do not rewrite unrelated fields.\n"
         "- Preserve existing structure. Do not remove keys the site uses. Never invent fields the schema doesn't have.\n"
-        "- If the request is unsafe/impossible, set kind='chat' and explain in 'reply'.\n\n"
+        "- If the request is unsafe/impossible, set kind='chat' and explain in 'reply'.\n"
+        "- Never expose passwordHash, twoFactorSecret, or backup codes verbatim.\n\n"
         "CURRENT SITE CONTENT (JSON):\n" + site_json
+        + admins_block
     )
 
 
@@ -2412,7 +2598,25 @@ async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = D
     subscribers_count = await db.subscribers.count_documents({})
     snapshot = _copy.deepcopy(site)
     site_json = _json.dumps(site, ensure_ascii=False)
-    system_prompt = _unified_admin_prompt(site_json, subscribers_count)
+    is_super = bool(admin.get("isSuper"))
+    admins_json = "[]"
+    if is_super:
+        cursor = db.admins.find({}, {"passwordHash": 0, "twoFactorSecret": 0, "twoFactorPendingSecret": 0, "twoFactorBackupCodes": 0})
+        rows = []
+        async for a_doc in cursor:
+            rows.append(
+                {
+                    "id": a_doc.get("_id"),
+                    "username": a_doc.get("username"),
+                    "email": a_doc.get("email"),
+                    "permissions": a_doc.get("permissions", []),
+                    "isSuper": bool(a_doc.get("isSuper")),
+                    "twoFactorEnabled": bool(a_doc.get("twoFactorEnabled")),
+                    "createdAt": a_doc.get("createdAt"),
+                }
+            )
+        admins_json = _json.dumps(rows, ensure_ascii=False)
+    system_prompt = _unified_admin_prompt(site_json, subscribers_count, admins_json, is_super)
 
     # Session memory: reuse chat_sessions collection with mode 'admin-writer'
     now_iso = datetime.utcnow().isoformat()
@@ -2473,6 +2677,7 @@ async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = D
         "snapshot": None,
         "emailSent": False,
         "emailStats": None,
+        "adminAction": None,
     }
 
     # --- Handle EDIT ---
@@ -2524,6 +2729,20 @@ async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = D
             result["emailDraft"] = {"subject": subject, "html": html, "recipientCount": subscribers_count}
             if not reply_text:
                 result["reply"] = f"Draft is ready \u2014 preview below. Say 'send it' to broadcast to {subscribers_count} subscriber(s)."
+
+    # --- Handle ADMIN MANAGEMENT (super admins only) ---
+    elif kind == "admins":
+        if not is_super:
+            result["kind"] = "chat"
+            result["reply"] = (reply_text or "") + "\n\n(You need super-admin rights to manage admin accounts. Ask a super admin.)"
+        else:
+            action_result = await _apply_admin_action(parsed.get("admins") or {}, admin)
+            result["adminAction"] = action_result
+            if not reply_text:
+                if action_result.get("ok"):
+                    result["reply"] = action_result.get("summary") or "Done."
+                else:
+                    result["reply"] = f"Couldn\u2019t do that: {action_result.get('error') or 'unknown error'}."
 
     # --- Persist chat memory ---
     try:
