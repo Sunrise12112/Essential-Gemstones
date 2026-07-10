@@ -67,8 +67,8 @@ export function AuthProvider({ children }) {
     refresh();
   }, [refresh]);
 
-  const register = async ({ fullName, email, phone, password, subscribeNewsletter = true }) => {
-    const { data } = await api.post('/auth/register', { fullName, email, phone, password, subscribeNewsletter });
+  const register = async ({ fullName, email, password, subscribeNewsletter = true }) => {
+    const { data } = await api.post('/auth/register', { fullName, email, password, subscribeNewsletter });
     setAuth(data.token, data.user);
     return data.user;
   };

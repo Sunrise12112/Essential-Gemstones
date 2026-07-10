@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { X, Loader2, Gem, Phone } from 'lucide-react';
+import { X, Loader2, Gem } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../hooks/use-toast';
 
 export default function AuthModal() {
   const { authModalOpen, closeAuthModal, authModalMode, register, login } = useAuth();
   const [mode, setMode] = useState(authModalMode);
-  const [form, setForm] = useState({ fullName: '', email: '', phone: '', password: '' });
+  const [form, setForm] = useState({ fullName: '', email: '', password: '' });
   const [submitting, setSubmitting] = useState(false);
   const { toast } = useToast();
 
@@ -25,13 +25,13 @@ export default function AuthModal() {
     setSubmitting(true);
     try {
       if (mode === 'register') {
-        await register({ fullName: form.fullName, email: form.email, phone: form.phone, password: form.password, subscribeNewsletter: true });
+        await register({ fullName: form.fullName, email: form.email, password: form.password, subscribeNewsletter: true });
         toast({ title: 'Welcome to the family', description: 'Your account is ready. Check your inbox!' });
       } else {
         await login({ email: form.email, password: form.password });
         toast({ title: 'Signed in', description: 'Good to see you again.' });
       }
-      setForm({ fullName: '', email: '', phone: '', password: '' });
+      setForm({ fullName: '', email: '', password: '' });
       closeAuthModal();
     } catch (err) {
       const msg = err?.response?.data?.detail || 'Something went wrong. Please try again.';
@@ -55,38 +55,20 @@ export default function AuthModal() {
         </div>
         <form onSubmit={onSubmit} className="px-8 py-7 space-y-4">
           {mode === 'register' && (
-            <>
-              <div>
-                <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Full name</label>
-                <input required autoFocus value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} placeholder="Your name" data-testid="signup-full-name" className="w-full px-4 py-3 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-white" />
-              </div>
-              <div>
-                <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Phone number</label>
-                <div className="relative">
-                  <Phone className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-[#8b6b4f]" />
-                  <input
-                    type="tel"
-                    required
-                    value={form.phone}
-                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                    placeholder="+1 415 555 0100"
-                    data-testid="signup-phone"
-                    className="w-full pl-11 pr-4 py-3 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-white"
-                  />
-                </div>
-                <p className="text-[11px] text-[#8b6b4f] mt-1.5 pl-3">We'll only text you about your orders — never spam.</p>
-              </div>
-            </>
+            <div>
+              <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Full name</label>
+              <input required autoFocus value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} placeholder="Your name" className="w-full px-4 py-3 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-white" />
+            </div>
           )}
           <div>
             <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Email</label>
-            <input type="email" required autoFocus={mode !== 'register'} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="you@example.com" data-testid="signup-email" className="w-full px-4 py-3 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-white" />
+            <input type="email" required autoFocus={mode !== 'register'} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="you@example.com" className="w-full px-4 py-3 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-white" />
           </div>
           <div>
             <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Password</label>
-            <input type="password" required value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={mode === 'register' ? '8+ chars, incl. upper/lower/number/symbol' : ''} data-testid="signup-password" className="w-full px-4 py-3 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-white" />
+            <input type="password" required value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={mode === 'register' ? '≥ 6 characters' : ''} className="w-full px-4 py-3 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-white" />
           </div>
-          <button type="submit" disabled={submitting} data-testid="signup-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-2">
+          <button type="submit" disabled={submitting} className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-2">
             {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
             {submitting ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Sign in'}
           </button>
