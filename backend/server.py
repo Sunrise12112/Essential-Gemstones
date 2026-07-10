@@ -1462,6 +1462,7 @@ async def test_email(payload: dict, admin: dict = Depends(require_admin)) -> dic
 class UserRegisterIn(BaseModel):
     fullName: str
     email: EmailStr
+    phone: str
     password: str
     subscribeNewsletter: bool = True
 
@@ -1473,12 +1474,38 @@ class UserLoginIn(BaseModel):
 
 class UserProfileUpdate(BaseModel):
     fullName: Optional[str] = None
+    phone: Optional[str] = None
     password: Optional[str] = None
 
 
 class AdminUserUpdate(BaseModel):
     isBanned: Optional[bool] = None
     fullName: Optional[str] = None
+    phone: Optional[str] = None
+
+
+def _normalize_phone(raw: str) -> str:
+    """Return an E.164 phone number (+<country><digits>) or raise HTTPException 400.
+    Accepts inputs with spaces, dashes, parentheses. If the user typed a US-style
+    10-digit number without a country code, prepend +1."""
+    if raw is None:
+        raise HTTPException(status_code=400, detail="Phone number is required")
+    cleaned = _pw_re.sub(r"[\s\-().]", "", str(raw))
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Phone number is required")
+    if cleaned.startswith("00"):
+        cleaned = "+" + cleaned[2:]
+    if not cleaned.startswith("+"):
+        digits = _pw_re.sub(r"\D", "", cleaned)
+        if len(digits) == 10:
+            cleaned = "+1" + digits
+        elif len(digits) == 11 and digits.startswith("1"):
+            cleaned = "+" + digits
+        else:
+            raise HTTPException(status_code=400, detail="Please include a country code, e.g. +1 415 555 0100")
+    if not _pw_re.match(r"^\+[1-9]\d{7,14}$", cleaned):
+        raise HTTPException(status_code=400, detail="That doesn\u2019t look like a valid phone number. Use the format +14155550100")
+    return cleaned
 
 
 def user_to_public(doc: dict) -> dict:
@@ -1486,6 +1513,7 @@ def user_to_public(doc: dict) -> dict:
         "id": doc["_id"],
         "fullName": doc.get("fullName", ""),
         "email": doc.get("email", ""),
+        "phone": doc.get("phone", ""),
         "isBanned": bool(doc.get("isBanned")),
         "favorites": doc.get("favorites", []),
         "createdAt": doc.get("createdAt"),
@@ -1496,6 +1524,7 @@ def user_to_public(doc: dict) -> dict:
 async def auth_register(payload: UserRegisterIn) -> dict:
     full_name = (payload.fullName or "").strip()
     email = str(payload.email).strip().lower()
+    phone = _normalize_phone(payload.phone)
     if len(full_name) < 2:
         raise HTTPException(status_code=400, detail="Please enter your full name")
     validate_password_strength(payload.password)
@@ -1506,6 +1535,7 @@ async def auth_register(payload: UserRegisterIn) -> dict:
         "_id": str(uuid.uuid4()),
         "fullName": full_name,
         "email": email,
+        "phone": phone,
         "passwordHash": hash_password(payload.password),
         "isBanned": False,
         "favorites": [],
@@ -1573,9 +1603,10 @@ async def auth_update_me(payload: UserProfileUpdate, user: dict = Depends(requir
         if len(name) < 2:
             raise HTTPException(status_code=400, detail="Please enter your full name")
         updates["fullName"] = name
+    if payload.phone is not None:
+        updates["phone"] = _normalize_phone(payload.phone)
     if payload.password is not None:
-        if len(payload.password) < 6:
-            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+        validate_password_strength(payload.password)
         updates["passwordHash"] = hash_password(payload.password)
     if updates:
         await db.users.update_one({"_id": user["sub"]}, {"$set": updates})
