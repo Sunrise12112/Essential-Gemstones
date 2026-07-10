@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Sparkles, X, Send, Loader2, ClipboardCheck, Undo2, History, Plus, Trash2, Pencil, Check, Mail, Wand2, MessageSquare, Users } from 'lucide-react';
+import { Sparkles, X, Send, Loader2, ClipboardCheck, Undo2, History, Plus, Trash2, Pencil, Check, Mail, Wand2, MessageSquare, Users, Eye, ExternalLink } from 'lucide-react';
 import api, { API } from '../../lib/api';
 import { useToast } from '../../hooks/use-toast';
 import { useSite } from '../../context/SiteContext';
@@ -84,6 +84,7 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
         snapshot: data.snapshot || null,
         emailDraft: data.emailDraft || null,
         adminAction: data.adminAction || null,
+        preview: data.preview || null,
       };
       setMessages((s) => {
         const list = [...s];
@@ -137,14 +138,19 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
     }
   };
 
-  const sendBroadcast = async (draft, index) => {
+  const sendBroadcast = async (draft, index, overrideTo) => {
     if (!draft?.subject || !draft?.html) return;
-    if (!window.confirm(`Send this email to ${draft.recipientCount || 0} subscriber(s)?`)) return;
+    const to = overrideTo !== undefined ? overrideTo : (draft.toSpec ?? draft.to ?? 'subscribers');
+    const count = Array.isArray(to) ? to.length : (draft.recipientCount || 0);
+    const label = Array.isArray(to)
+      ? `${to.length} recipient${to.length === 1 ? '' : 's'}`
+      : (draft.audience || (typeof to === 'string' ? to : 'subscribers'));
+    if (!window.confirm(`Send this email to ${label}${count ? ` (${count})` : ''}?`)) return;
     setBusy(true);
     try {
-      const { data } = await api.post('/admin/ai/email/send', { subject: draft.subject, html: draft.html });
+      const { data } = await api.post('/admin/ai/email/send', { subject: draft.subject, html: draft.html, to });
       setMessages((s) => s.map((m, i) => (i === index ? { ...m, sent: true, sendStats: data } : m)));
-      toast({ title: 'Email sent', description: `Delivered to ${data.sent} subscriber(s).${data.failed ? ` ${data.failed} failed.` : ''}` });
+      toast({ title: 'Email sent', description: `Delivered to ${data.sent} ${data.audience || 'recipient'}(s).${data.failed ? ` ${data.failed} failed.` : ''}` });
     } catch (e) {
       toast({ title: 'Send failed', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
     } finally {
@@ -205,8 +211,8 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
 
   if (!open) return null;
 
-  const kindIcon = (k) => k === 'edit' ? <Wand2 className="w-3 h-3" /> : k === 'email' ? <Mail className="w-3 h-3" /> : k === 'admins' ? <Users className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />;
-  const kindLabel = (k) => k === 'edit' ? 'Site edit' : k === 'email' ? 'Email draft' : k === 'admins' ? 'Admin action' : 'Reply';
+  const kindIcon = (k) => k === 'edit' ? <Wand2 className="w-3 h-3" /> : k === 'email' ? <Mail className="w-3 h-3" /> : k === 'admins' ? <Users className="w-3 h-3" /> : k === 'preview' ? <Eye className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />;
+  const kindLabel = (k) => k === 'edit' ? 'Site edit' : k === 'email' ? 'Email draft' : k === 'admins' ? 'Admin action' : k === 'preview' ? 'Site preview' : 'Reply';
 
   return (
     <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-[#1a1410]/60 backdrop-blur-sm">
@@ -327,29 +333,21 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
                   </div>
                 )}
 
-                {/* Email draft: preview + Send */}
+                {/* Email draft: recipients + preview + Send */}
                 {m.role === 'assistant' && m.kind === 'email' && m.emailDraft && (
-                  <div className="mt-3 pt-3 border-t border-[#e8dfd1] space-y-3">
-                    <div className="text-[11px] text-[#8b6b4f] uppercase tracking-wider">Subject</div>
-                    <div className="text-sm text-[#1a1410] font-medium -mt-2">{m.emailDraft.subject}</div>
-                    <div className="text-[11px] text-[#8b6b4f] uppercase tracking-wider">Preview</div>
-                    <div className="border border-[#e8dfd1] rounded-lg bg-white max-h-64 overflow-y-auto -mt-2">
-                      <div className="p-2" dangerouslySetInnerHTML={{ __html: m.emailDraft.html }} />
-                    </div>
-                    {!m.sent ? (
-                      <button
-                        onClick={() => sendBroadcast(m.emailDraft, i)}
-                        disabled={busy}
-                        data-testid={`admin-ai-send-email-${i}`}
-                        className="text-xs px-4 py-2 rounded-full bg-[#1a1410] text-[#faf6f0] hover:bg-[#6b4f3a] inline-flex items-center gap-1.5 disabled:opacity-60">
-                        <Mail className="w-3 h-3" /> Send to {m.emailDraft.recipientCount} subscriber{m.emailDraft.recipientCount === 1 ? '' : 's'}
-                      </button>
-                    ) : (
-                      <div className="text-xs text-[#3d3128] italic">
-                        Sent to {m.sendStats?.sent || 0} subscriber(s){m.sendStats?.failed ? ` — ${m.sendStats.failed} failed` : ''}.
-                      </div>
-                    )}
-                  </div>
+                  <EmailDraftCard
+                    draft={m.emailDraft}
+                    index={i}
+                    sent={m.sent}
+                    sendStats={m.sendStats}
+                    busy={busy}
+                    onSend={(overrideTo) => sendBroadcast(m.emailDraft, i, overrideTo)}
+                  />
+                )}
+
+                {/* Preview: iframe showing a live section of the site */}
+                {m.role === 'assistant' && m.kind === 'preview' && m.preview && (
+                  <PreviewCard preview={m.preview} index={i} />
                 )}
 
                 {/* Admin management: show what was done */}
@@ -403,3 +401,134 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
     </div>
   );
 }
+
+function EmailDraftCard({ draft, index, sent, sendStats, busy, onSend }) {
+  const initialRecipients = Array.isArray(draft.to) ? draft.to.join(', ') : '';
+  const initialSpec = typeof draft.toSpec === 'string' ? draft.toSpec : (Array.isArray(draft.toSpec) ? 'custom' : 'subscribers');
+  const [audience, setAudience] = React.useState(Array.isArray(draft.toSpec) ? 'custom' : initialSpec);
+  const [customList, setCustomList] = React.useState(initialRecipients);
+
+  const submit = () => {
+    if (audience === 'custom') {
+      const list = customList.split(/[,\n;]+/).map((s) => s.trim()).filter(Boolean);
+      if (!list.length) return;
+      onSend(list);
+    } else {
+      onSend(audience);
+    }
+  };
+
+  const label = audience === 'custom'
+    ? `${customList.split(/[,\n;]+/).map((s) => s.trim()).filter(Boolean).length} recipient(s)`
+    : audience;
+
+  return (
+    <div className="mt-3 pt-3 border-t border-[#e8dfd1] space-y-3" data-testid={`admin-ai-email-draft-${index}`}>
+      <div>
+        <div className="text-[11px] text-[#8b6b4f] uppercase tracking-wider">Subject</div>
+        <div className="text-sm text-[#1a1410] font-medium">{draft.subject}</div>
+      </div>
+      <div>
+        <div className="text-[11px] text-[#8b6b4f] uppercase tracking-wider mb-1">Recipients</div>
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {[
+            { v: 'subscribers', l: 'Newsletter subscribers' },
+            { v: 'members', l: 'Members' },
+            { v: 'admins', l: 'Admins' },
+            { v: 'all', l: 'Everyone' },
+            { v: 'custom', l: 'Specific people\u2026' },
+          ].map((opt) => (
+            <button
+              key={opt.v}
+              type="button"
+              onClick={() => setAudience(opt.v)}
+              data-testid={`admin-ai-audience-${opt.v}-${index}`}
+              className={`text-xs px-3 py-1 rounded-full border transition-colors ${audience === opt.v ? 'bg-[#1a1410] text-[#faf6f0] border-[#1a1410]' : 'bg-white text-[#5a4a3d] border-[#e8dfd1] hover:bg-[#faf6f0]'}`}
+            >
+              {opt.l}
+            </button>
+          ))}
+        </div>
+        {audience === 'custom' && (
+          <textarea
+            value={customList}
+            onChange={(e) => setCustomList(e.target.value)}
+            data-testid={`admin-ai-email-recipients-${index}`}
+            rows={2}
+            placeholder="one or more emails, separated by commas"
+            className="w-full text-sm px-3 py-2 border border-[#e8dfd1] rounded-lg bg-[#faf6f0] focus:outline-none focus:border-[#6b4f3a] font-mono"
+          />
+        )}
+      </div>
+      <div>
+        <div className="text-[11px] text-[#8b6b4f] uppercase tracking-wider mb-1">Preview</div>
+        <div className="border border-[#e8dfd1] rounded-lg bg-white max-h-64 overflow-y-auto">
+          <div className="p-2" dangerouslySetInnerHTML={{ __html: draft.html }} />
+        </div>
+      </div>
+      {!sent ? (
+        <button
+          onClick={submit}
+          disabled={busy || (audience === 'custom' && !customList.trim())}
+          data-testid={`admin-ai-send-email-${index}`}
+          className="text-xs px-4 py-2 rounded-full bg-[#1a1410] text-[#faf6f0] hover:bg-[#6b4f3a] inline-flex items-center gap-1.5 disabled:opacity-60"
+        >
+          <Mail className="w-3 h-3" /> Send to {label}
+        </button>
+      ) : (
+        <div className="text-xs text-[#3d3128] italic">
+          Sent to {sendStats?.sent || 0} {sendStats?.audience || 'recipient'}(s){sendStats?.failed ? ` \u2014 ${sendStats.failed} failed` : ''}.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PreviewCard({ preview, index }) {
+  const backendUrl = process.env.REACT_APP_BACKEND_URL || '';
+  // Strip trailing slash; anchor is optional
+  const base = backendUrl.replace(/\/$/, '');
+  const url = preview.anchor ? `${base}/#${preview.anchor}` : `${base}/`;
+  const [key, setKey] = React.useState(0);
+  return (
+    <div className="mt-3 pt-3 border-t border-[#e8dfd1] space-y-2" data-testid={`admin-ai-preview-${index}`}>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="text-[11px] text-[#8b6b4f] uppercase tracking-wider inline-flex items-center gap-1">
+          <Eye className="w-3 h-3" /> Live preview \u00b7 <span className="text-[#3d3128] normal-case tracking-normal">{preview.section}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setKey((k) => k + 1)}
+            className="text-xs px-2 py-1 border border-[#e8dfd1] rounded-full hover:bg-[#faf6f0] inline-flex items-center gap-1"
+            data-testid={`admin-ai-preview-refresh-${index}`}
+            title="Refresh preview"
+          >
+            <Loader2 className="w-3 h-3" /> Refresh
+          </button>
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs px-2 py-1 border border-[#e8dfd1] rounded-full hover:bg-[#faf6f0] inline-flex items-center gap-1"
+            data-testid={`admin-ai-preview-open-${index}`}
+          >
+            <ExternalLink className="w-3 h-3" /> Open
+          </a>
+        </div>
+      </div>
+      {preview.note && <p className="text-xs text-[#5a4a3d] italic">{preview.note}</p>}
+      <div className="rounded-xl border border-[#e8dfd1] overflow-hidden bg-white" style={{ height: 380 }}>
+        <iframe
+          key={key}
+          src={url}
+          title={`Preview: ${preview.section}`}
+          className="w-full h-full"
+          data-testid={`admin-ai-preview-iframe-${index}`}
+          sandbox="allow-scripts allow-same-origin"
+        />
+      </div>
+    </div>
+  );
+}
+

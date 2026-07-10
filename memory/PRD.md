@@ -74,6 +74,16 @@ Root causes + fixes:
 Testing: iteration_4 (backend 5/5), iteration_5 (frontend race repro 1/1 PASS). Regression tests in `/app/backend/tests/test_site_and_uploads.py`.
 NOTE: User must REDEPLOY to production for these fixes to take effect; hero video must be re-uploaded once on production (old file was lost from ephemeral disk).
 
+## 2026-07-09 (3) — AI can PREVIEW the site + SEND EMAILS to anyone
+User asked: (a) let the AI show a live preview of the site, (b) let the AI send emails to any recipient — not just newsletter subscribers.
+Delivered:
+1. **New `kind:"preview"` action** — AI responds with `preview:{section, anchor, note}` and the AIWriter renders an embedded iframe pointing to the live site at the requested section anchor (`top`,`shop`,`faq`,`story`,`founder`,`members`,`chakra`, or `full`). Refresh + open-in-new-tab buttons included.
+2. **Emails to anybody** — `POST /api/admin/ai/email/send` now accepts a `to` field: a list of email addresses, a single email string, or one of the audience keywords `subscribers` (default), `members`, `admins`, `all`. New helper `_resolve_email_audience` handles the resolution and de-duping.
+3. **Editable recipients in the email draft UI** — the EmailDraftCard shows audience buttons (Newsletter / Members / Admins / Everyone / Specific people) plus a free-form recipient list. Admin picks who gets the message before hitting "Send".
+4. AI prompt updated so Claude picks `kind:"preview"` for "show me the hero" style requests and correctly populates `email.to` with the specific address(es) mentioned in the conversation.
+
+Verified end-to-end via curl + a real AI round-trip: "Show me the hero" \u2192 `kind:preview, anchor:top`; "Draft an email to grandma@example.com" \u2192 `kind:email, to:['grandma@example.com']`.
+
 ## 2026-07-09 (2) — Email required for admins + Admin AI can manage admins
 User asked: (1) email is required when creating a new admin, (2) super admins can edit any admin's email, (3) the Admin AI can create/edit/delete/reset admins (super-admin only).
 Delivered:

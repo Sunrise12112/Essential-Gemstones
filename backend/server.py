@@ -2555,34 +2555,44 @@ def _unified_admin_prompt(site_json: str, subscriber_count: int, admins_json: st
     return (
         "You are the SITE OWNER'S personal AI for Essential Gemstones, a handmade lava-stone bracelet brand "
         "founded by Luca (he/him, nine years old). You act on behalf of the admin. You can hold a normal "
-        "conversation, draft copy, EDIT the live site, SEND an email broadcast to every newsletter subscriber, "
-        "or (super admins only) MANAGE OTHER ADMIN ACCOUNTS. Choose the ONE action that best fits the admin's request.\n\n"
+        "conversation, draft copy, EDIT the live site, PREVIEW a section of the live site inside the chat, "
+        "SEND emails to any recipients, or (super admins only) MANAGE OTHER ADMIN ACCOUNTS. Choose the ONE "
+        "action that best fits the admin's request.\n\n"
         "VOICE: warm, earthy, sincere, plain and grounded. Short sentences. No exclamation-heavy hype, no emojis. "
         "Never refer to Luca as she/her/they. Never lead descriptions of Luca with his age.\n\n"
         "OUTPUT FORMAT: Reply with ONLY a single JSON object (no prose outside JSON, no code fences). Exact shape:\n"
         "{\n"
-        '  "kind": "chat" | "edit" | "email" | "admins",\n'
+        '  "kind": "chat" | "edit" | "preview" | "email" | "admins",\n'
         '  "reply": "<what to show the admin>",\n'
         '  "edits": [ {"path": "<dotted path>", "value": <new value>} ],\n'
-        '  "email": { "subject": "<subject line>", "html": "<well-formatted HTML body>" },\n'
+        '  "preview": { "section": "hero"|"products"|"faq"|"about"|"story"|"founder"|"members"|"chakra"|"full", "note": "<what to look at>" },\n'
+        '  "email": { "subject": "<subject line>", "html": "<well-formatted HTML body>", "to": <recipients> },\n'
         '  "admins": { "action": "...", ... }\n'
         "}\n"
-        "Only include 'edits' when kind='edit'. Only include 'email' when kind='email'. Only include 'admins' when kind='admins'. "
-        "'reply' is ALWAYS required.\n\n"
+        "Only include 'edits' when kind='edit'. Only include 'preview' when kind='preview'. Only include 'email' "
+        "when kind='email'. Only include 'admins' when kind='admins'. 'reply' is ALWAYS required.\n\n"
         "WHEN TO PICK EACH kind:\n"
         "- 'chat'  \u2192 the admin is asking a question, brainstorming, or wants you to draft copy without applying it. "
         "Put the draft or answer in 'reply'.\n"
         "- 'edit'  \u2192 the admin wants a live change to the website (hero, products, FAQ, colors of copy, section order, "
         "visibility, footer, etc.). Fill 'edits' with MINIMAL, TARGETED paths and put a one-sentence summary in 'reply'.\n"
-        "- 'email' \u2192 the admin wants a message sent to newsletter subscribers "
-        f"(current subscriber count: {subscriber_count}). "
-        "Write a real, warm HTML email in 'email.html' using inline styles suitable for email clients. Put a short "
-        "confirmation in 'reply' like: 'Ready to send to your subscribers. Say \"send it\" to confirm.' "
-        "IMPORTANT: Pick kind='email' whenever the admin says anything like 'draft an email', 'send an email', "
-        "'email my subscribers', 'newsletter', 'broadcast', 'announce to subscribers', or 'let my list know'. "
-        "Even if the admin says 'draft' \u2014 if the audience is subscribers/list/newsletter, ALWAYS use kind='email' "
-        "(the admin will confirm before it sends). Only fall back to kind='chat' when the admin is writing copy that is NOT "
-        "meant to be sent as an email (e.g., product blurbs, hero copy, About text).\n"
+        "- 'preview' \u2192 the admin wants to SEE something on the site (e.g. 'show me the hero', 'what does the products "
+        "section look like right now?', 'let me see the FAQ', 'preview the footer'). Set preview.section to one of "
+        "'hero','products','faq','about','story','founder','members','chakra', or 'full' for the whole page. "
+        "Use preview.note to point out what they should notice. Also pick 'preview' when the admin asks you to preview "
+        "a change you just made or want to make.\n"
+        "- 'email' \u2192 the admin wants an email drafted and (after they confirm) sent. Write a real, warm HTML email "
+        "in 'email.html' using inline styles suitable for email clients. Choose 'email.to' based on the audience the "
+        "admin describes:\n"
+        f"    * \"subscribers\" (default) \u2013 every newsletter subscriber (current count: {subscriber_count}).\n"
+        "    * \"members\" \u2013 every signed-up member/user account.\n"
+        "    * \"admins\" \u2013 every admin account with an email on file.\n"
+        "    * \"all\" \u2013 union of subscribers + members + admins.\n"
+        "    * A JSON list of specific email addresses \u2013 for one-off messages, e.g. [\"friend@example.com\"].\n"
+        "    * A single email address string \u2013 for messaging one specific person.\n"
+        "  Put a short confirmation in 'reply' like 'Draft ready. Say send it to email <audience>.' The admin will "
+        "review the recipients + copy before it actually goes out. If the admin says 'send an email to <name>' but "
+        "hasn\u2019t given an address, ASK for the address in 'reply' with kind='chat'.\n"
         + admins_action_doc +
         "\nEDIT PATH SYNTAX:\n"
         "- Dot notation to descend into objects. Bracket [n] to select an array index. "
@@ -2694,6 +2704,7 @@ async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = D
         "emailSent": False,
         "emailStats": None,
         "adminAction": None,
+        "preview": None,
     }
 
     # --- Handle EDIT ---
@@ -2732,19 +2743,64 @@ async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = D
         if not reply_text:
             result["reply"] = f"Applied {len(applied)} change(s)." if applied else "No changes applied."
 
-    # --- Handle EMAIL BROADCAST ---
+    # --- Handle EMAIL DRAFT (any recipients) ---
     elif kind == "email":
         email_obj = parsed.get("email") or {}
         subject = str(email_obj.get("subject") or "").strip()
         html = str(email_obj.get("html") or "").strip()
+        to_spec = email_obj.get("to")
+        if to_spec is None:
+            to_spec = "subscribers"
+        recipients, audience_label = await _resolve_email_audience(to_spec)
         if not subject or not html:
             result["kind"] = "chat"
-            result["reply"] = (reply_text or "") + "\n\n(I didn't have a subject/body ready \u2014 tell me what to say and I'll draft it.)"
+            result["reply"] = (reply_text or "") + "\n\n(I didn\u2019t have a subject/body ready \u2014 tell me what to say and I\u2019ll draft it.)"
         else:
-            # Draft-only: return the draft; admin confirms via /api/admin/ai/email/send
-            result["emailDraft"] = {"subject": subject, "html": html, "recipientCount": subscribers_count}
+            # Draft-only: admin confirms via /api/admin/ai/email/send
+            result["emailDraft"] = {
+                "subject": subject,
+                "html": html,
+                "to": recipients,
+                "toSpec": to_spec if isinstance(to_spec, (str, list)) else "subscribers",
+                "audience": audience_label,
+                "recipientCount": len(recipients),
+            }
             if not reply_text:
-                result["reply"] = f"Draft is ready \u2014 preview below. Say 'send it' to broadcast to {subscribers_count} subscriber(s)."
+                if recipients:
+                    result["reply"] = f"Draft is ready \u2014 preview below. Say \u2018send it\u2019 to email {audience_label} ({len(recipients)} recipient{'s' if len(recipients) != 1 else ''})."
+                else:
+                    result["reply"] = f"Draft is ready \u2014 but I couldn\u2019t find any {audience_label} to send to. Tell me who should receive it."
+
+    # --- Handle PREVIEW (show the admin a live section of the site inside chat) ---
+    elif kind == "preview":
+        preview_obj = parsed.get("preview") or {}
+        section = str(preview_obj.get("section") or "full").strip().lower()
+        # Map section name -> anchor id used on the public site
+        anchor_map = {
+            "hero": "top",
+            "top": "top",
+            "products": "shop",
+            "shop": "shop",
+            "faq": "faq",
+            "about": "story",
+            "story": "story",
+            "founder": "founder",
+            "members": "members",
+            "vip": "members",
+            "chakra": "chakra",
+            "full": "",
+            "home": "",
+        }
+        if section not in anchor_map:
+            section = "full"
+        anchor = anchor_map[section]
+        result["preview"] = {
+            "section": section,
+            "anchor": anchor,
+            "note": str(preview_obj.get("note") or "").strip(),
+        }
+        if not reply_text:
+            result["reply"] = f"Here\u2019s a live look at the {section} section." if section != "full" else "Here\u2019s the whole site as it looks right now."
 
     # --- Handle ADMIN MANAGEMENT (super admins only) ---
     elif kind == "admins":
@@ -2779,27 +2835,82 @@ async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = D
 class AdminBroadcastIn(BaseModel):
     subject: str
     html: str
+    to: Optional[Any] = None  # list of emails, or one of {"subscribers","admins","users","all"}
+
+
+async def _resolve_email_audience(audience: Any) -> tuple[list[str], str]:
+    """Turn an audience spec into a de-duped list of email addresses.
+    Accepts: list of emails, a single email string, or the keywords
+    'subscribers' (default), 'admins', 'users', 'all'.
+    Returns (emails, label)."""
+    label = "subscribers"
+    emails: list[str] = []
+    email_re = _pw_re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+    async def _subs() -> list[str]:
+        out: list[str] = []
+        async for doc in db.subscribers.find():
+            e = (doc.get("email") or "").strip().lower()
+            if e:
+                out.append(e)
+        return out
+
+    async def _admins() -> list[str]:
+        out: list[str] = []
+        async for doc in db.admins.find():
+            e = (doc.get("email") or "").strip().lower()
+            if e:
+                out.append(e)
+        return out
+
+    async def _users() -> list[str]:
+        out: list[str] = []
+        async for doc in db.users.find():
+            e = (doc.get("email") or "").strip().lower()
+            if e:
+                out.append(e)
+        return out
+
+    if audience is None or (isinstance(audience, str) and audience.strip().lower() in {"subscribers", "subscriber", "newsletter"}):
+        emails = await _subs()
+        label = "subscribers"
+    elif isinstance(audience, str) and audience.strip().lower() == "admins":
+        emails = await _admins()
+        label = "admins"
+    elif isinstance(audience, str) and audience.strip().lower() in {"users", "members"}:
+        emails = await _users()
+        label = "members"
+    elif isinstance(audience, str) and audience.strip().lower() == "all":
+        emails = list({*(await _subs()), *(await _users()), *(await _admins())})
+        label = "everyone (subscribers + members + admins)"
+    elif isinstance(audience, str) and email_re.match(audience.strip()):
+        emails = [audience.strip().lower()]
+        label = audience.strip().lower()
+    elif isinstance(audience, list):
+        for x in audience:
+            if isinstance(x, str) and email_re.match(x.strip()):
+                emails.append(x.strip().lower())
+        emails = list(dict.fromkeys(emails))  # dedupe, preserve order
+        label = f"{len(emails)} recipient(s)"
+    return emails, label
 
 
 @app.post("/api/admin/ai/email/send")
 async def admin_ai_send_broadcast(payload: AdminBroadcastIn, admin: dict = Depends(require_admin)) -> dict:
-    """Confirm & send an admin-AI-drafted broadcast to every newsletter subscriber."""
+    """Confirm & send an admin-AI-drafted email. Recipients can be all newsletter subscribers,
+    members, admins, everyone, or an explicit list of email addresses."""
     subject = (payload.subject or "").strip()
     html = (payload.html or "").strip()
     if not subject or not html:
         raise HTTPException(status_code=400, detail="Subject and body are required.")
-    subs: list[str] = []
-    async for doc in db.subscribers.find():
-        e = (doc.get("email") or "").strip().lower()
-        if e:
-            subs.append(e)
-    if not subs:
-        return {"ok": True, "sent": 0, "failed": 0, "message": "No subscribers to send to."}
+    recipients, label = await _resolve_email_audience(payload.to)
+    if not recipients:
+        return {"ok": True, "sent": 0, "failed": 0, "message": f"No {label} to send to."}
 
     sent = 0
     failed = 0
     errors: list[str] = []
-    for addr in subs:
+    for addr in recipients:
         try:
             await send_email(addr, subject, html)
             sent += 1
@@ -2807,4 +2918,4 @@ async def admin_ai_send_broadcast(payload: AdminBroadcastIn, admin: dict = Depen
             failed += 1
             if len(errors) < 5:
                 errors.append(f"{addr}: {exc}")
-    return {"ok": True, "sent": sent, "failed": failed, "totalSubscribers": len(subs), "errors": errors}
+    return {"ok": True, "sent": sent, "failed": failed, "total": len(recipients), "audience": label, "errors": errors}
