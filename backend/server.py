@@ -1599,6 +1599,108 @@ async def toggle_favorite(product_id: str, user: dict = Depends(require_user)) -
     return {"favorited": favorited, "favorites": favorites}
 
 
+# ---------------- WAITLIST (notify-me when available) ---------------- #
+
+
+class WaitlistIn(BaseModel):
+    email: Optional[EmailStr] = None
+
+
+def _product_by_id(site: dict, product_id: str) -> Optional[dict]:
+    for it in (site.get("products", {}) or {}).get("items", []) or []:
+        if it.get("id") == product_id:
+            return it
+    return None
+
+
+@app.post("/api/products/{product_id}/waitlist")
+async def join_waitlist(product_id: str, payload: WaitlistIn, request: Request) -> dict:
+    """Add a user (logged-in or guest via email) to a product's waitlist."""
+    site = await get_site_doc()
+    product = _product_by_id(site, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Resolve caller: either a logged-in user via Bearer, or a guest via body.email
+    email: Optional[str] = None
+    user_id: Optional[str] = None
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            payload_jwt = jwt.decode(auth.split(" ", 1)[1], JWT_SECRET, algorithms=[JWT_ALG])
+            if payload_jwt.get("role") == "user":
+                user_id = payload_jwt.get("sub")
+                udoc = await db.users.find_one({"_id": user_id})
+                if udoc:
+                    email = (udoc.get("email") or "").strip().lower() or None
+        except jwt.PyJWTError:
+            pass
+
+    if not email:
+        email = (str(payload.email).strip().lower() if payload.email else None) or None
+    if not email:
+        raise HTTPException(status_code=400, detail="Sign in or provide an email to join the waitlist.")
+
+    # Idempotent
+    existing = await db.product_waitlist.find_one({"productId": product_id, "email": email})
+    if existing:
+        return {"ok": True, "already": True, "productId": product_id, "email": _obfuscate_email(email)}
+
+    await db.product_waitlist.insert_one(
+        {
+            "_id": str(uuid.uuid4()),
+            "productId": product_id,
+            "productName": product.get("name") or "",
+            "email": email,
+            "userId": user_id,
+            "createdAt": datetime.utcnow().isoformat(),
+        }
+    )
+    return {"ok": True, "already": False, "productId": product_id, "email": _obfuscate_email(email)}
+
+
+@app.delete("/api/products/{product_id}/waitlist")
+async def leave_waitlist(product_id: str, user: dict = Depends(require_user)) -> dict:
+    udoc = await db.users.find_one({"_id": user["sub"]})
+    email = (udoc.get("email") or "").strip().lower() if udoc else None
+    query: dict[str, Any] = {"productId": product_id, "$or": [{"userId": user["sub"]}]}
+    if email:
+        query["$or"].append({"email": email})
+    res = await db.product_waitlist.delete_many(query)
+    return {"ok": True, "removed": res.deleted_count}
+
+
+@app.get("/api/me/waitlist")
+async def my_waitlist(user: dict = Depends(require_user)) -> list[dict]:
+    udoc = await db.users.find_one({"_id": user["sub"]})
+    email = (udoc.get("email") or "").strip().lower() if udoc else None
+    q: dict[str, Any] = {"$or": [{"userId": user["sub"]}]}
+    if email:
+        q["$or"].append({"email": email})
+    out: list[dict] = []
+    async for r in db.product_waitlist.find(q):
+        out.append({"productId": r.get("productId"), "productName": r.get("productName"), "createdAt": r.get("createdAt")})
+    return out
+
+
+@app.get("/api/admin/waitlist")
+async def admin_list_waitlist(admin: dict = Depends(require_admin)) -> list[dict]:
+    """Admin view of everyone waiting for products."""
+    out: list[dict] = []
+    async for r in db.product_waitlist.find().sort("createdAt", -1):
+        out.append(
+            {
+                "id": r.get("_id"),
+                "productId": r.get("productId"),
+                "productName": r.get("productName"),
+                "email": r.get("email"),
+                "userId": r.get("userId"),
+                "createdAt": r.get("createdAt"),
+            }
+        )
+    return out
+
+
 # ---------------- ADMIN: USER MANAGEMENT ---------------- #
 
 

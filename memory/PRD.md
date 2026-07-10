@@ -74,6 +74,18 @@ Root causes + fixes:
 Testing: iteration_4 (backend 5/5), iteration_5 (frontend race repro 1/1 PASS). Regression tests in `/app/backend/tests/test_site_and_uploads.py`.
 NOTE: User must REDEPLOY to production for these fixes to take effect; hero video must be re-uploaded once on production (old file was lost from ephemeral disk).
 
+## 2026-07-09 (4) — Product detail modal + waitlist
+User asked: clicking a product should open an enlarged view with Buy Now, description, add-to-waitlist, and more.
+Delivered:
+1. **ProductModal** (`/app/frontend/src/components/ProductModal.jsx`) — full-screen modal that opens on click of any product card. Includes: large image (with gallery-dot navigation if a `gallery` array is on the product), badge, price, short description, optional `longDescription`, optional `details`/`features` bullet list, trust row (handmade · real stones · ships in 3–5 days), Buy Now CTA (or "Currently unavailable" placeholder), favorite heart, and "Notify me" waitlist (email input for guests, one-click for logged-in members). ESC + arrow-key navigation + click-outside-to-close + body-scroll lock.
+2. **Waitlist backend** — new collection `product_waitlist` and four endpoints:
+   - `POST /api/products/{id}/waitlist` (guest via email or authed user), idempotent
+   - `DELETE /api/products/{id}/waitlist` (authed only)
+   - `GET /api/me/waitlist` (authed users see their own list)
+   - `GET /api/admin/waitlist` (admin sees everyone waiting for what)
+3. Products.jsx made the whole card clickable/keyboard-accessible with a hover "View details" hint; the Heart + Buy Now buttons stop propagation so they still work in isolation.
+Verified: curl create/idempotent/empty-email/invalid-product all correct; live screenshot confirms modal opens on card click and renders all sections.
+
 ## 2026-07-09 (3) — AI can PREVIEW the site + SEND EMAILS to anyone
 User asked: (a) let the AI show a live preview of the site, (b) let the AI send emails to any recipient — not just newsletter subscribers.
 Delivered:
