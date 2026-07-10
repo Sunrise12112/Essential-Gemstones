@@ -1486,6 +1486,8 @@ def user_to_public(doc: dict) -> dict:
         "id": doc["_id"],
         "fullName": doc.get("fullName", ""),
         "email": doc.get("email", ""),
+        "picture": doc.get("picture", ""),
+        "authProvider": doc.get("authProvider", "email"),
         "isBanned": bool(doc.get("isBanned")),
         "favorites": doc.get("favorites", []),
         "createdAt": doc.get("createdAt"),
@@ -1553,6 +1555,75 @@ async def auth_login(payload: UserLoginIn) -> dict:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if doc.get("isBanned"):
         raise HTTPException(status_code=403, detail="Your account has been suspended.")
+    token = make_user_token(doc["_id"], doc["email"])
+    return {"token": token, "user": user_to_public(doc)}
+
+
+# ---------- Sign in with Google (Emergent-managed OAuth) ---------- #
+# REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+
+
+class GoogleSessionIn(BaseModel):
+    session_id: str
+
+
+@app.post("/api/auth/google/session")
+async def auth_google_session(payload: GoogleSessionIn) -> dict:
+    """Exchange an Emergent OAuth session_id for our own user JWT.
+    The frontend receives session_id in the URL fragment after the Google flow;
+    it posts the id here, we verify it with Emergent, upsert the user by email,
+    and hand back a normal user JWT so the rest of the app keeps working."""
+    sid = (payload.session_id or "").strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="Missing session id")
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=12.0) as client:
+            r = await client.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": sid},
+            )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Google sign-in service unreachable: {exc}") from exc
+    if r.status_code != 200:
+        raise HTTPException(status_code=401, detail="This Google sign-in link has expired. Please try again.")
+    data = r.json() or {}
+    email = str(data.get("email") or "").strip().lower()
+    name = str(data.get("name") or "").strip()
+    picture = str(data.get("picture") or "").strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="Google didn't share an email for this account.")
+
+    doc = await db.users.find_one({"email": email})
+    if doc:
+        # Existing member — just log them in and freshen their profile picture/name
+        updates: dict[str, Any] = {}
+        if name and name != (doc.get("fullName") or ""):
+            updates["fullName"] = name
+        if picture and picture != (doc.get("picture") or ""):
+            updates["picture"] = picture
+        if not doc.get("authProvider"):
+            updates["authProvider"] = "email+google" if doc.get("passwordHash") else "google"
+        if updates:
+            await db.users.update_one({"_id": doc["_id"]}, {"$set": updates})
+            doc.update(updates)
+    else:
+        doc = {
+            "_id": str(uuid.uuid4()),
+            "fullName": name or email.split("@")[0],
+            "email": email,
+            "passwordHash": "",  # Google users have no local password
+            "picture": picture,
+            "isBanned": False,
+            "favorites": [],
+            "authProvider": "google",
+            "createdAt": datetime.utcnow().isoformat(),
+        }
+        await db.users.insert_one(doc)
+
+    if doc.get("isBanned"):
+        raise HTTPException(status_code=403, detail="Your account has been suspended.")
+
     token = make_user_token(doc["_id"], doc["email"])
     return {"token": token, "user": user_to_public(doc)}
 

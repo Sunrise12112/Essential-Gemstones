@@ -60,6 +60,13 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
+    // If returning from Google OAuth, skip /auth/me — AuthCallback will
+    // exchange the session_id and set our JWT first.
+    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+    if (typeof window !== 'undefined' && window.location.hash && window.location.hash.includes('session_id=')) {
+      setLoading(false);
+      return;
+    }
     const cached = localStorage.getItem('eg_user');
     if (cached) {
       try { setUser(JSON.parse(cached)); } catch (e) { /* ignore */ }
@@ -75,6 +82,18 @@ export function AuthProvider({ children }) {
 
   const login = async ({ email, password }) => {
     const { data } = await api.post('/auth/login', { email, password });
+    setAuth(data.token, data.user);
+    return data.user;
+  };
+
+  const beginGoogleSignIn = () => {
+    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+    const redirectUrl = window.location.origin + '/';
+    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+  };
+
+  const completeGoogleSignIn = async (sessionId) => {
+    const { data } = await api.post('/auth/google/session', { session_id: sessionId });
     setAuth(data.token, data.user);
     return data.user;
   };
@@ -121,6 +140,8 @@ export function AuthProvider({ children }) {
       toggleFavorite,
       openAuthModal,
       closeAuthModal,
+      beginGoogleSignIn,
+      completeGoogleSignIn,
       authModalOpen,
       authModalMode,
     }}>

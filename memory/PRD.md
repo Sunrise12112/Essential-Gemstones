@@ -74,6 +74,18 @@ Root causes + fixes:
 Testing: iteration_4 (backend 5/5), iteration_5 (frontend race repro 1/1 PASS). Regression tests in `/app/backend/tests/test_site_and_uploads.py`.
 NOTE: User must REDEPLOY to production for these fixes to take effect; hero video must be re-uploaded once on production (old file was lost from ephemeral disk).
 
+## 2026-07-09 (5) — Sign in with Google (Emergent-managed OAuth)
+User asked: add Google sign-in to the app.
+Delivered:
+1. **Frontend "Continue with Google" button** on the AuthModal (both Sign In and Create Account modes), sitting above the email/password form with a divider. Uses `window.location.origin + '/'` for the redirect (never hardcoded).
+2. **AuthCallback component** at `/app/frontend/src/components/auth/AuthCallback.jsx` renders when `location.hash` contains `session_id=`. Synchronously checked during App render (not useEffect) to avoid race conditions per the playbook. Uses a `useRef` guard so StrictMode double-mount doesn't burn the session_id twice.
+3. **AuthProvider race-condition fix** — the `/auth/me` refresh call is skipped when the URL fragment contains `session_id=` so AuthCallback can exchange the code and mint a JWT first.
+4. **Backend `POST /api/auth/google/session`** — takes `{session_id}`, calls Emergent's `/session-data` endpoint server-side (never from the frontend), upserts the user in `db.users` by email (auto-creates a Google-only account if new, or logs into an existing email account, refreshing name + profile picture), and returns our normal `{token, user}` shape. Existing endpoints (`/auth/me`, favorites, waitlist, etc.) work unchanged.
+5. `user_to_public` now returns `picture` + `authProvider` fields.
+6. **Admin auth is completely untouched** — separate `db.admins` collection with TOTP/Email OTP/trusted devices continues to work as before.
+
+Verified: missing session_id → 422 pydantic error; bogus session_id → friendly 401 "This Google sign-in link has expired. Please try again."; screenshot confirms the Google button renders correctly in the modal.
+
 ## 2026-07-09 (4) — Product detail modal + waitlist
 User asked: clicking a product should open an enlarged view with Buy Now, description, add-to-waitlist, and more.
 Delivered:

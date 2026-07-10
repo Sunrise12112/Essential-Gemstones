@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import './App.css';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import Home from './pages/Home';
 import AdminLogin from './pages/AdminLogin';
 import AdminDashboard from './pages/AdminDashboard';
@@ -9,7 +9,25 @@ import { AuthProvider } from './context/AuthContext';
 import { Toaster } from './components/ui/toaster';
 import { toast } from './hooks/use-toast';
 import AuthModal from './components/auth/AuthModal';
+import AuthCallback from './components/auth/AuthCallback';
 import SignupPrompt from './components/auth/SignupPrompt';
+
+// REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+function AppRoutes() {
+  const location = useLocation();
+  // Synchronously catch the Google OAuth return fragment BEFORE the normal
+  // routes run — this avoids race conditions with the AuthProvider's /auth/me check.
+  if (location.hash && location.hash.includes('session_id=')) {
+    return <AuthCallback />;
+  }
+  return (
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/admin" element={<AdminLogin />} />
+      <Route path="/admin/dashboard" element={<AdminDashboard />} />
+    </Routes>
+  );
+}
 
 function App() {
   useEffect(() => {
@@ -25,11 +43,7 @@ function App() {
       <SiteProvider>
         <AuthProvider>
           <BrowserRouter>
-            <Routes>
-              <Route path="/" element={<Home />} />
-              <Route path="/admin" element={<AdminLogin />} />
-              <Route path="/admin/dashboard" element={<AdminDashboard />} />
-            </Routes>
+            <AppRoutes />
             <AuthModal />
             <SignupPrompt />
           </BrowserRouter>
