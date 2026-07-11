@@ -1301,6 +1301,15 @@ async def list_permissions() -> dict:
 
 # ---------------- EMAIL ---------------- #
 
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+RESEND_FROM = os.environ.get("RESEND_FROM", "onboarding@resend.dev").strip()
+try:
+    import resend as _resend
+    if RESEND_API_KEY:
+        _resend.api_key = RESEND_API_KEY
+except Exception:  # noqa: BLE001
+    _resend = None
+
 
 def _send_email_sync(to_email: str, subject: str, html: str, reply_to: Optional[str] = None) -> None:
     if not SMTP_USER or not SMTP_PASS:
@@ -1320,8 +1329,44 @@ def _send_email_sync(to_email: str, subject: str, html: str, reply_to: Optional[
         server.send_message(msg)
 
 
+def _send_email_resend(to_email: str, subject: str, html: str, reply_to: Optional[str] = None) -> str:
+    """Send via Resend. Returns the message id. Raises on failure."""
+    if not RESEND_API_KEY or _resend is None:
+        raise RuntimeError("Resend not configured")
+    from_addr = RESEND_FROM
+    # If the FROM doesn't include a friendly name, add the brand
+    if "<" not in from_addr and " " not in from_addr:
+        from_addr = f"{SMTP_FROM_NAME} <{RESEND_FROM}>"
+    params: dict[str, Any] = {
+        "from": from_addr,
+        "to": [to_email],
+        "subject": subject,
+        "html": html,
+    }
+    if reply_to:
+        params["reply_to"] = [reply_to]
+    res = _resend.Emails.send(params)
+    return (res or {}).get("id", "")
+
+
 async def send_email(to_email: str, subject: str, html: str, reply_to: Optional[str] = None) -> None:
-    await asyncio.to_thread(_send_email_sync, to_email, subject, html, reply_to)
+    """Send an email. Prefers Resend when RESEND_API_KEY is set; falls back to Gmail SMTP.
+    Raises the last error if BOTH providers fail (or if neither is configured)."""
+    errors: list[str] = []
+    if RESEND_API_KEY and _resend is not None:
+        try:
+            await asyncio.to_thread(_send_email_resend, to_email, subject, html, reply_to)
+            return
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"resend: {exc}")
+            logging.warning("Resend send failed, falling back to SMTP: %s", exc)
+    if SMTP_USER and SMTP_PASS:
+        try:
+            await asyncio.to_thread(_send_email_sync, to_email, subject, html, reply_to)
+            return
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"smtp: {exc}")
+    raise RuntimeError("Failed to send email: " + " | ".join(errors) if errors else "No email provider configured")
 
 
 def _admin_notify_html(email: str, when: str) -> str:

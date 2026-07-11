@@ -74,6 +74,16 @@ Root causes + fixes:
 Testing: iteration_4 (backend 5/5), iteration_5 (frontend race repro 1/1 PASS). Regression tests in `/app/backend/tests/test_site_and_uploads.py`.
 NOTE: User must REDEPLOY to production for these fixes to take effect; hero video must be re-uploaded once on production (old file was lost from ephemeral disk).
 
+## 2026-07-09 (6) — Resend email integration
+User asked: add Resend to the app for better email deliverability.
+Delivered:
+1. **`send_email()` now prefers Resend, falls back to Gmail SMTP** — same signature, so every existing caller (newsletter welcome, admin notifications, admin AI broadcasts, admin 2FA email OTP, contact form) works unchanged. If `RESEND_API_KEY` is set the app sends via Resend; if that call throws for any reason we automatically retry via the existing Gmail SMTP path so email never breaks. If both fail, we raise a combined error.
+2. Env vars added to backend/.env: `RESEND_API_KEY`, `RESEND_FROM` (defaults to `onboarding@resend.dev`).
+3. `resend>=2.0.0` pinned in `requirements.txt`.
+Verified: `POST /api/subscribe` returns `welcomeSent: true` end-to-end through the new Resend path.
+
+**Known limitation on the free Resend sandbox** — on the shared `onboarding@resend.dev` sender, Resend will only deliver to the email address the account was created with. To send to real customers/subscribers the user must verify their own domain (essentialgemstones.com) at resend.com/domains, then flip `RESEND_FROM` to `hello@essentialgemstones.com`. Until then, any recipient other than the Resend account owner will bounce (the fallback to Gmail SMTP catches this).
+
 ## 2026-07-09 (5) — Sign in with Google (Emergent-managed OAuth)
 User asked: add Google sign-in to the app.
 Delivered:
