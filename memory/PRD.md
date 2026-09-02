@@ -144,3 +144,6 @@ Backend testing: 18/18 pytests pass (`/app/backend/tests/test_admin_2fa_alt_meth
 - P2: Media Library in the admin panel (list/reuse/delete Object Storage files)
 - P2: Refactor `server.py` (>2500 lines) into modular routers (auth, admin_2fa, admin_trusted_devices, cms, chat)
 - P3: Retry-with-backoff on object storage GET (occasional 5xx)
+
+## 2026-06 — OG / Social Share Meta
+- index.html: title "Essential Gemstones", description "Handmade · Volcanic · Intentional", og:*/twitter:* tags with user-supplied 7-chakra lava bracelet image (hosted on customer-assets; local copy at frontend/public/og-image.jpg). Requires redeploy to reflect on live site.
