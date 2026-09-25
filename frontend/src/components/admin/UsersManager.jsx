@@ -28,7 +28,7 @@ export default function UsersManager() {
     try {
       const token = localStorage.getItem('eg_admin_token');
       await api.put(`/admin/users/${u.id}`, { isBanned }, { headers: { Authorization: `Bearer ${token}` } });
-      toast({ title: isBanned ? 'Account suspended' : 'Account restored', description: u.email });
+      toast({ title: isBanned ? 'Account suspended' : 'Account restored', description: (u.email || u.phone) });
       load();
     } catch (e) {
       toast({ title: 'Update failed', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
@@ -36,11 +36,11 @@ export default function UsersManager() {
   };
 
   const remove = async (u) => {
-    if (!window.confirm(`Delete account for ${u.email}? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete account for ${(u.email || u.phone)}? This cannot be undone.`)) return;
     try {
       const token = localStorage.getItem('eg_admin_token');
       await api.delete(`/admin/users/${u.id}`, { headers: { Authorization: `Bearer ${token}` } });
-      toast({ title: 'Deleted', description: u.email });
+      toast({ title: 'Deleted', description: (u.email || u.phone) });
       load();
     } catch (e) {
       toast({ title: 'Delete failed', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
@@ -49,7 +49,7 @@ export default function UsersManager() {
 
   const exportCsv = () => {
     if (users.length === 0) return;
-    const rows = [['fullName', 'email', 'isBanned', 'favorites', 'createdAt'], ...users.map((u) => [u.fullName, u.email, u.isBanned, (u.favorites || []).join('|'), u.createdAt])];
+    const rows = [['fullName', 'email', 'isBanned', 'favorites', 'createdAt'], ...users.map((u) => [u.fullName, (u.email || u.phone), u.isBanned, (u.favorites || []).join('|'), u.createdAt])];
     const csv = rows.map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -62,7 +62,7 @@ export default function UsersManager() {
   const filtered = users.filter((u) => {
     if (!query) return true;
     const q = query.toLowerCase();
-    return (u.fullName || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q);
+    return (u.fullName || '').toLowerCase().includes(q) || ((u.email || u.phone) || '').toLowerCase().includes(q);
   });
 
   return (
@@ -101,7 +101,7 @@ export default function UsersManager() {
                       {u.isBanned && <span className="text-[10px] tracking-[0.15em] uppercase bg-red-100 text-red-700 px-2 py-0.5 rounded">Suspended</span>}
                       {(u.favorites?.length || 0) > 0 && <span className="text-[10px] text-[#8b6b4f]">♥ {u.favorites.length}</span>}
                     </div>
-                    <p className="text-xs text-[#8b6b4f] truncate">{u.email} · joined {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : ''}</p>
+                    <p className="text-xs text-[#8b6b4f] truncate">{(u.email || u.phone)} · joined {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : ''}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">

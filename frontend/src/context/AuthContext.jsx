@@ -98,6 +98,17 @@ export function AuthProvider({ children }) {
     return data.user;
   };
 
+  const sendPhoneCode = async ({ phone, carrier }) => {
+    const { data } = await api.post('/auth/phone/send', { phone, carrier });
+    return data;
+  };
+
+  const verifyPhoneCode = async ({ phone, carrier, code, fullName }) => {
+    const { data } = await api.post('/auth/phone/verify', { phone, carrier, code, fullName });
+    setAuth(data.token, data.user);
+    return data.user;
+  };
+
   const logout = () => { clearAuth(); };
 
   const toggleFavorite = async (productId) => {
@@ -142,6 +153,8 @@ export function AuthProvider({ children }) {
       closeAuthModal,
       beginGoogleSignIn,
       completeGoogleSignIn,
+      sendPhoneCode,
+      verifyPhoneCode,
       authModalOpen,
       authModalMode,
     }}>

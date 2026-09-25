@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Lock, Gem, User, ShieldCheck, KeyRound, Copy, Check, RefreshCw, Mail, Smartphone } from 'lucide-react';
+import { Lock, Gem, User, ShieldCheck, KeyRound, Copy, Check, RefreshCw, Mail, Smartphone, MessageSquare } from 'lucide-react';
 import api from '../lib/api';
 import { useToast } from '../hooks/use-toast';
 
@@ -28,6 +28,7 @@ export default function AdminLogin() {
   const [setupData, setSetupData] = useState(null);
   const [availableMethods, setAvailableMethods] = useState(['totp']);
   const [emailHint, setEmailHint] = useState('');
+  const [phoneHint, setPhoneHint] = useState('');
   const [code, setCode] = useState('');
   const [backupCodes, setBackupCodes] = useState(null);
   const [copiedSecret, setCopiedSecret] = useState(false);
@@ -43,7 +44,7 @@ export default function AdminLogin() {
   }, [navigate]);
 
   useEffect(() => {
-    if ((step === 'totp' || step === 'email' || step === 'backup' || (step === 'setup' && setupData)) && codeRef.current) {
+    if ((step === 'totp' || step === 'email' || step === 'sms' || step === 'backup' || (step === 'setup' && setupData)) && codeRef.current) {
       codeRef.current.focus();
     }
   }, [step, setupData]);
@@ -77,6 +78,7 @@ export default function AdminLogin() {
         setChallengeToken(data.twoFactorToken);
         setAvailableMethods(Array.isArray(data.availableMethods) && data.availableMethods.length ? data.availableMethods : ['totp']);
         setEmailHint(data.emailHint || '');
+        setPhoneHint(data.phoneHint || '');
         // If only one method, jump straight to it
         if (!data.availableMethods || data.availableMethods.length <= 1) {
           setStep('totp');
@@ -135,11 +137,29 @@ export default function AdminLogin() {
     }
   };
 
+  const sendSmsCode = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post('/admin/2fa/sms/send', {}, { headers: { Authorization: `Bearer ${challengeToken}` } });
+      setPhoneHint(data.sentTo || phoneHint);
+      setEmailSentAt(Date.now());
+      setResendCooldown(data.resendAfterSeconds || 30);
+      toast({ title: 'Text sent', description: `We texted a 6-digit code to ${data.sentTo}. It can take up to a minute to arrive.` });
+    } catch (err) {
+      toast({ title: 'Couldn\u2019t send text', description: err?.response?.data?.detail || 'Try another method.', variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const chooseMethod = async (method) => {
     setCode('');
     if (method === 'email') {
       setStep('email');
       await sendEmailCode();
+    } else if (method === 'sms') {
+      setStep('sms');
+      await sendSmsCode();
     } else if (method === 'backup') {
       setStep('backup');
     } else {
@@ -315,6 +335,15 @@ export default function AdminLogin() {
                 onClick={() => chooseMethod('email')}
               />
             )}
+            {availableMethods.includes('sms') && (
+              <MethodButton
+                testid="admin-2fa-choose-sms"
+                icon={<MessageSquare className="w-5 h-5" />}
+                title="Text me a code"
+                sub={phoneHint ? `Send a 6-digit code by SMS to ${phoneHint}.` : 'Send a 6-digit code to your verified phone.'}
+                onClick={() => chooseMethod('sms')}
+              />
+            )}
             <MethodButton
               testid="admin-2fa-choose-backup"
               icon={<KeyRound className="w-5 h-5" />}
@@ -383,6 +412,42 @@ export default function AdminLogin() {
             </div>
             <TrustToggle trustDevice={trustDevice} setTrustDevice={setTrustDevice} />
             <button type="submit" disabled={loading || code.length !== 6} data-testid="admin-2fa-email-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60">
+              {loading ? 'Verifying\u2026' : 'Verify & sign in'}
+            </button>
+          </form>
+        </ChallengeCard>
+      )}
+
+      {step === 'sms' && (
+        <ChallengeCard
+          title="Check your texts"
+          hint={`We texted a 6-digit code to ${phoneHint || 'your phone'}. It expires in 10 minutes and may take up to a minute to arrive.`}
+          canSwitch
+          onSwitch={() => setStep('choose')}
+          onCancel={restart}
+        >
+          <form onSubmit={(e) => submitChallenge(e, 'sms')} data-testid="admin-2fa-sms-form">
+            <CodeInput
+              value={code}
+              onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
+              refEl={codeRef}
+              testid="admin-2fa-sms-code"
+              placeholder="000000"
+              maxLength={6}
+            />
+            <div className="flex items-center justify-between mb-4">
+              <button
+                type="button"
+                onClick={sendSmsCode}
+                disabled={loading || resendCooldown > 0}
+                data-testid="admin-2fa-sms-resend"
+                className="text-xs text-[#6b4f3a] hover:text-[#1a1410] disabled:opacity-50"
+              >
+                {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : (emailSentAt ? 'Resend text' : 'Send text')}
+              </button>
+            </div>
+            <TrustToggle trustDevice={trustDevice} setTrustDevice={setTrustDevice} />
+            <button type="submit" disabled={loading || code.length !== 6} data-testid="admin-2fa-sms-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60">
               {loading ? 'Verifying\u2026' : 'Verify & sign in'}
             </button>
           </form>

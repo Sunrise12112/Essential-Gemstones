@@ -10,6 +10,7 @@ import AdminsManager from '../components/admin/AdminsManager';
 import SubscribersManager from '../components/admin/SubscribersManager';
 import UsersManager from '../components/admin/UsersManager';
 import AIWriter from '../components/admin/AIWriter';
+import AdminPhoneSetup from '../components/admin/AdminPhoneSetup';
 import { Switch } from '../components/ui/switch';
 
 const SECTION_LABELS = {
@@ -211,6 +212,10 @@ export default function AdminDashboard() {
             <AdminsManager currentUser={me} />
           </SectionCard>
         )}
+
+        <SectionCard title="My Sign-in Phone (Text me a code)" open={openSections.phone} onToggle={() => toggle('phone')}>
+          <AdminPhoneSetup me={me} onChange={(u) => { setMe(u); localStorage.setItem('eg_admin_user', JSON.stringify(u)); }} />
+        </SectionCard>
 
         {/* Subscribers */}
         {can('manage_subscribers') && (

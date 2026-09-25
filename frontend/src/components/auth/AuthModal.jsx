@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { X, Loader2, Gem } from 'lucide-react';
+import { X, Loader2, Gem, MessageSquare, Mail } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../hooks/use-toast';
+import PhoneAuthForm from './PhoneAuthForm';
 
 export default function AuthModal() {
   const { authModalOpen, closeAuthModal, authModalMode, register, login, beginGoogleSignIn } = useAuth();
   const [mode, setMode] = useState(authModalMode);
+  const [method, setMethod] = useState('email');
   const [form, setForm] = useState({ fullName: '', email: '', password: '' });
   const [submitting, setSubmitting] = useState(false);
   const { toast } = useToast();
@@ -63,11 +65,24 @@ export default function AuthModal() {
             <GoogleGlyph />
             Continue with Google
           </button>
+          <button
+            type="button"
+            onClick={() => setMethod(method === 'phone' ? 'email' : 'phone')}
+            data-testid="auth-phone-toggle-btn"
+            className="w-full py-3 border border-[#e8dfd1] bg-white rounded-full text-sm text-[#1a1410] hover:bg-[#faf6f0] transition-colors inline-flex items-center justify-center gap-3"
+          >
+            {method === 'phone' ? <Mail className="w-4 h-4 text-[#6b4f3a]" /> : <MessageSquare className="w-4 h-4 text-[#6b4f3a]" />}
+            {method === 'phone' ? 'Continue with email' : 'Continue with phone (text code)'}
+          </button>
           <div className="flex items-center gap-3 my-1">
             <div className="flex-1 h-px bg-[#e8dfd1]" />
             <span className="text-[10px] tracking-[0.2em] uppercase text-[#8b6b4f]">or</span>
             <div className="flex-1 h-px bg-[#e8dfd1]" />
           </div>
+          {method === 'phone' ? (
+            <PhoneAuthForm mode={mode} onDone={closeAuthModal} />
+          ) : (
+          <>
           {mode === 'register' && (
             <div>
               <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Full name</label>
@@ -82,10 +97,12 @@ export default function AuthModal() {
             <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Password</label>
             <input type="password" required value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={mode === 'register' ? '≥ 6 characters' : ''} className="w-full px-4 py-3 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-white" />
           </div>
-          <button type="submit" disabled={submitting} className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-2">
+          <button type="submit" disabled={submitting} data-testid="auth-email-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-2">
             {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
             {submitting ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Sign in'}
           </button>
+          </>
+          )}
           <p className="text-center text-sm text-[#5a4a3d] pt-1">
             {mode === 'register' ? (
               <>Already have an account? <button type="button" onClick={() => setMode('login')} className="text-[#6b4f3a] underline underline-offset-4">Sign in</button></>
