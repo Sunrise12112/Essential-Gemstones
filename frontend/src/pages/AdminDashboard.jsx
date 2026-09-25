@@ -213,7 +213,7 @@ export default function AdminDashboard() {
           </SectionCard>
         )}
 
-        <SectionCard title="My Sign-in Phone (Text me a code)" open={openSections.phone} onToggle={() => toggle('phone')}>
+        <SectionCard testId="admin-phone-section" title="My Sign-in Phone (Text me a code)" open={openSections.phone} onToggle={() => toggle('phone')}>
           <AdminPhoneSetup me={me} onChange={(u) => { setMe(u); localStorage.setItem('eg_admin_user', JSON.stringify(u)); }} />
         </SectionCard>
 

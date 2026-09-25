@@ -9,6 +9,7 @@ Recreate essentialgemstones.com pixel-perfectly with an artisan, earthy aestheti
 - Auth: JWT (separate roles for users and admins), bcrypt via passlib
 - Email: Gmail SMTP (hello@essentialgemstones.com)
 - AI: `emergentintegrations` with `claude-sonnet-4.5` via EMERGENT_LLM_KEY
+- SMS: Twilio Programmable Messaging (configuration-ready; credentials/sender not yet available), with `phonenumbers` for number-only E.164 input. No carrier gateways or VoIP blocking.
 
 ## Implemented (chronological)
 - 2026-02: Full site UI replicating essentialgemstones.com
@@ -147,3 +148,38 @@ Backend testing: 18/18 pytests pass (`/app/backend/tests/test_admin_2fa_alt_meth
 
 ## 2026-06 — OG / Social Share Meta
 - index.html: title "Essential Gemstones", description "Handmade · Volcanic · Intentional", og:*/twitter:* tags with user-supplied 7-chakra lava bracelet image (hosted on customer-assets; local copy at frontend/public/og-image.jpg). Requires redeploy to reflect on live site.
+
+## 2026-09-25 — Number-only Twilio SMS authentication
+Latest user request: “You can use twillio for phone add it now and make it so it will accept a Google Voice number And it does not require you to choose your carrier you just put in your phone number”. User approved checking existing configuration and explicitly requested no further questions.
+
+### Implemented
+- Replaced carrier email-to-text gateways with official Twilio **Programmable Messaging**, not Verify. Removed carrier selectors, carrier-list endpoint, and carrier fields from new member/admin phone API payloads. Member phone registration and sign-in begin with the phone number alone.
+- Added `backend/sms_service.py` (Twilio transport, E.164 validation without carrier/line-type lookups, nonblocking bounded network calls, sanitized failures) and `backend/sms_otp.py` (MongoDB code lifecycle). Installed `twilio==9.11.1` and `phonenumbers==9.0.40` through pip and saved dependencies.
+- Google Voice/VoIP numbers are accepted by app validation. Their actual receipt of automated SMS remains subject to Twilio, Google Voice, and carrier restrictions; it is NOT guaranteed.
+- Codes are bcrypt-hashed, expire in 10 minutes, allow five attempts, and are atomically single-use. Atomic 30-second resend cooldown, five texts/number/hour and 100 texts globally/hour, with persistent MongoDB counters and TTL cleanup. Failed sends cannot be verified. Legacy carrier-gateway challenges are not accepted.
+- Preserved existing phone-account IDs/favorites by looking up old ten-digit numbers and normalizing them after successful sign-in. Banned accounts remain blocked.
+- Admin phone enrollment binds the pending number to its verification code. SMS challenge availability requires a verified phone, not a carrier. Removing/replacing the phone and resetting/disabling 2FA revoke pending SMS challenges. Existing TOTP/email/backup/trusted-device methods remain supported.
+- Fixed nested forms in the member auth modal, added scroll-safe mobile sizing and deterministic mobile navigation/auth controls, and preserved email/Google sign-in. Admin SMS errors no longer imply a code was sent; email and SMS cooldowns are independent. Added admin phone-section toggle/content test IDs and accessibility state.
+- Addressed authentication testing findings: `backend/auth_throttle.py` limits password attempts per normalized account/role to 10 per 15-minute window, resets on success; removed JWT_SECRET/ADMIN_PASSWORD fallback secrets; CORS now uses explicit environment-configured origins rather than wildcard+credentials. Preview ingress rewrites its origin to a specific proxy hostname, also explicitly listed in CORS_ORIGINS. No supervisor changes were necessary.
+- Temporary browser test account and seed helper removed after verification; no existing master credentials/enrollment changed.
+
+### Status / blocking configuration
+**Twilio credentials were NOT found. Live SMS is NOT activated and Google Voice receipt has NOT been verified.** No runtime mock, fake code, or email-gateway fallback exists. Send endpoints correctly return an explanatory 503 instead of claiming success.
+
+Required backend config: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and exactly one of `TWILIO_PHONE_NUMBER` or `TWILIO_MESSAGING_SERVICE_SID`. `DEFAULT_PHONE_REGION=US` is configured. Trial recipient restrictions and applicable US sender verification/A2P requirements still apply. Details: `/app/memory/SMS_SETUP.md`.
+
+### Verification
+- Reports: `/app/test_reports/iteration_8.json`, `/app/test_reports/iteration_9.json`.
+- Final self-rerun: **27/27 targeted backend tests passed**, 48.77 seconds. `/app/test_reports/pytest/pytest_sms_final.xml`, `/app/test_reports/sms-final-tests.log`.
+- Positive SMS transport/OTP route tests use **TEST-ONLY MOCKS** and isolated MongoDB databases. This does not establish real SMS receipt.
+- Browser checks passed for mobile 320px menu/sign-in/join, no carrier/name fields, safe missing-config error, no accidental email-form requests, admin SMS challenge error + backup fallback, and tablet/desktop auth layouts. Admin setup send/remove error UI also tested with **TEST-ONLY MOCKED responses**.
+- Python compilation and frontend build pass (pre-existing lint/deprecation warnings only). Final phone-section selector/accessibility change verified by rendering both open/closed states. Temporary database fixtures cleaned.
+- Full real Google OAuth sign-in and live SMS delivery were not exercised; invalid Google session and existing email/password/admin alternatives were checked.
+
+### Current priorities (supersedes older roadmap entries)
+- **P0 — Activation blocker:** Twilio account credentials and an approved SMS sender are needed before real phone auth can send texts. Then verify one member and one admin code to an opted-in Google Voice number end-to-end.
+- **P0 — Before further complex features:** continue modularizing `server.py` (>3,000 lines); SMS transport, OTP lifecycle and password throttling have now been extracted.
+- **P1 — User verification:** previous production AI authentication issue remains outside this SMS task; no new report investigated here.
+- **P1 — Account recovery UI:** regenerate backup codes; trusted-device list/revoke controls (backend exists).
+- **P2:** attach guest waitlists by email on sign-in; media library; evaluate httpOnly session storage as a separate architectural change, not an SMS regression.
+- **Future enhancement:** opt-in waitlist text alerts using the same verified number after real SMS delivery is active.

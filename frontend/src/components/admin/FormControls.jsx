@@ -21,14 +21,15 @@ export function TextArea({ value, onChange, rows = 3, ...rest }) {
   );
 }
 
-export function SectionCard({ title, children, open, onToggle }) {
+export function SectionCard({ title, children, open, onToggle, testId }) {
+  const sectionId = testId || `admin-section-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-$/, '')}`;
   return (
     <div className="bg-white border border-[#e8dfd1] rounded-2xl overflow-hidden">
-      <button type="button" onClick={onToggle} className="w-full px-6 py-4 flex items-center justify-between hover:bg-[#faf6f0] transition-colors">
+      <button type="button" data-testid={`${sectionId}-toggle`} aria-expanded={!!open} aria-controls={`${sectionId}-content`} onClick={onToggle} className="w-full px-6 py-4 flex items-center justify-between hover:bg-[#faf6f0] transition-colors">
         <span className="font-serif text-lg text-[#1a1410]">{title}</span>
         <span className="text-[#8b6b4f] text-sm">{open ? '−' : '+'}</span>
       </button>
-      {open && <div className="px-6 pb-6 space-y-4 border-t border-[#e8dfd1]">{children}</div>}
+      {open && <div id={`${sectionId}-content`} data-testid={`${sectionId}-content`} className="px-6 pb-6 space-y-4 border-t border-[#e8dfd1]">{children}</div>}
     </div>
   );
 }

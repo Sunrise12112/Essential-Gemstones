@@ -1,0 +1,88 @@
+{
+  "summary": "Completed backend+frontend verification focused on new phone-number-only auth and Twilio SMS OTP behavior. Added and ran a dedicated regression suite with 18/18 passing tests for member phone endpoints, Twilio transport SDK parameter handling (TEST-ONLY), OTP consume/cooldown/attempt protections, token-guarding on admin SMS challenge route, and baseline member email/Google-invalid-session regressions. Frontend checks confirmed auth modal phone flow has no carrier selector, no nested forms, no accidental /auth/login or /auth/register calls during phone send, and shows explicit 503 messaging when SMS credentials are missing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/auth/login and /api/admin/login",
+        "issue": "No brute-force lockout/throttling found for repeated bad password attempts (playbook check expected this)."
+      },
+      {
+        "endpoint": "Global CORS middleware",
+        "issue": "Configured with allow_credentials=True and allow_origins=['*']; wildcard + credentials is unsafe/non-compliant for credentialed browser flows."
+      },
+      {
+        "endpoint": "Auth session handling",
+        "issue": "Auth relies on localStorage JWTs; httpOnly secure-cookie login flow not implemented (playbook verification item remains unmet)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Mobile header/auth entry (320px)",
+        "issue": "No direct 'Sign in' button visible at 320px viewport in hero header; auth entry appears behind mobile navigation/menu flow and was not directly testable via same desktop selector.",
+        "selector": "get_by_role('button', name='Sign in')",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Member phone send (frontend -> backend)",
+        "issue": "Flow correctly fails closed with explicit 503 because Twilio credentials are absent; no OTP stage is entered and no login/register fallback request is fired.",
+        "affected_selectors": [
+          "[data-testid='auth-phone-toggle-btn']",
+          "[data-testid='phone-auth-submit']",
+          "[data-testid='phone-auth-error']"
+        ]
+      },
+      {
+        "flow": "Admin SMS challenge frontend",
+        "issue": "Partially unverified in browser this run because admin route tested is /admin (not /admin/login) and SMS challenge requires authenticated challenge-state with verified phone + configured SMS provider. Real send path blocked by missing Twilio credentials.",
+        "affected_selectors": [
+          "[data-testid='admin-2fa-choose-sms']",
+          "[data-testid='admin-2fa-sms-error']"
+        ]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Auth modal and admin login responsiveness",
+        "issues": [
+          "No clipping/overflow observed for tested modal/login surfaces at 768/1024/1440; admin login also stable at 320.",
+          "Auth modal 320px flow remained partially blocked by mobile entry/navigation pattern rather than modal layout breakage."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phone_sms_auth.py",
+    "/app/test_reports/pytest/pytest_phone_sms.xml"
+  ],
+  "action_items": [
+    "Keep current explicit 503 behavior for unconfigured Twilio; do not claim delivery until credentials exist.",
+    "If cookie-based auth is desired by policy/playbook, implement httpOnly secure cookies and update client auth handling.",
+    "Add password-attempt throttling/lockout for /api/auth/login and /api/admin/login.",
+    "Update CORS to explicit trusted origins when allow_credentials is enabled.",
+    "Main agent should self-test mobile auth entry path (hamburger/menu) at 320px and add deterministic data-testid for mobile sign-in trigger if missing."
+  ],
+  "critical_code_review_comments": [
+    "server.py uses permissive defaults for sensitive env vars (e.g., JWT_SECRET, ADMIN_PASSWORD). This weakens fail-fast guarantees and can mask misconfiguration.",
+    "server.py is very large (>3000 lines), reducing maintainability and increasing regression risk; split auth/admin/sms routes into focused modules.",
+    "CORS middleware currently allows credentials with wildcard origins; move to explicit origins from env to avoid browser/security issues."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phone_sms_auth.py",
+    "/app/test_reports/pytest/pytest_phone_sms.xml",
+    "/app/test_reports/iteration_8.json"
+  ],
+  "success_rate": {
+    "backend": "100% (18/18 tests passed)",
+    "frontend": "75% (core member phone auth modal flow verified on desktop/tablet; admin SMS challenge + full mobile auth entry partially unverified due state/provider constraints)"
+  },
+  "seed_data_creation": "Created disposable members during tests (TEST_member_* token-guard check and smsreg_* email auth regression). Cleanup fixture deletes created records after tests.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "New regression suite: /app/backend/tests/test_phone_sms_auth.py. It includes TEST-ONLY transport mocks for Twilio SDK behavior and isolated temporary Mongo DB wrappers for otp-state tests. Real SMS delivery remains blocked without Twilio credentials. Frontend automation confirmed no carrier selector and no nested forms for phone auth modal, and captured explicit 503 UI messaging. Admin login route is /admin (not /admin/login).",
+  "rca of the issue": "Primary blockers for live positive SMS paths are environmental, not code: Twilio credentials/sender are absent by design, so send endpoints return explicit 503 and no usable OTP is kept. This was reproduced via API and UI. SMS success-path correctness was validated with TEST-ONLY mocked transport and isolated OTP-state tests (MOCKED), confirming expected Twilio SDK call shape and fail-closed behavior when provider send fails."
+}

@@ -98,13 +98,13 @@ export function AuthProvider({ children }) {
     return data.user;
   };
 
-  const sendPhoneCode = async ({ phone, carrier }) => {
-    const { data } = await api.post('/auth/phone/send', { phone, carrier });
+  const sendPhoneCode = async ({ phone }) => {
+    const { data } = await api.post('/auth/phone/send', { phone });
     return data;
   };
 
-  const verifyPhoneCode = async ({ phone, carrier, code, fullName }) => {
-    const { data } = await api.post('/auth/phone/verify', { phone, carrier, code, fullName });
+  const verifyPhoneCode = async ({ phone, code, fullName }) => {
+    const { data } = await api.post('/auth/phone/verify', { phone, code, fullName });
     setAuth(data.token, data.user);
     return data.user;
   };

@@ -18,7 +18,7 @@ function pwdIssues(p) {
 }
 
 export default function AdminLogin() {
-  const [step, setStep] = useState('password'); // password | setup | choose | totp | email | backup
+  const [step, setStep] = useState('password'); // password | setup | choose | totp | email | sms | backup
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -35,6 +35,9 @@ export default function AdminLogin() {
   const [trustDevice, setTrustDevice] = useState(false);
   const [emailSentAt, setEmailSentAt] = useState(0);
   const [resendCooldown, setResendCooldown] = useState(0);
+  const [smsCooldown, setSmsCooldown] = useState(0);
+  const [smsSent, setSmsSent] = useState(false);
+  const [smsError, setSmsError] = useState('');
   const codeRef = useRef(null);
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -51,10 +54,13 @@ export default function AdminLogin() {
 
   // Countdown for email resend
   useEffect(() => {
-    if (resendCooldown <= 0) return undefined;
-    const id = setInterval(() => setResendCooldown((s) => Math.max(0, s - 1)), 1000);
+    if (resendCooldown <= 0 && smsCooldown <= 0) return undefined;
+    const id = setInterval(() => {
+      setResendCooldown((s) => Math.max(0, s - 1));
+      setSmsCooldown((s) => Math.max(0, s - 1));
+    }, 1000);
     return () => clearInterval(id);
-  }, [resendCooldown]);
+  }, [resendCooldown, smsCooldown]);
 
   const submitPassword = async (e) => {
     e.preventDefault();
@@ -138,15 +144,16 @@ export default function AdminLogin() {
   };
 
   const sendSmsCode = async () => {
+    if (loading) return;
     setLoading(true);
+    setSmsError('');
     try {
       const { data } = await api.post('/admin/2fa/sms/send', {}, { headers: { Authorization: `Bearer ${challengeToken}` } });
       setPhoneHint(data.sentTo || phoneHint);
-      setEmailSentAt(Date.now());
-      setResendCooldown(data.resendAfterSeconds || 30);
-      toast({ title: 'Text sent', description: `We texted a 6-digit code to ${data.sentTo}. It can take up to a minute to arrive.` });
+      setSmsSent(true);
+      setSmsCooldown(data.resendAfterSeconds || 30);
     } catch (err) {
-      toast({ title: 'Couldn\u2019t send text', description: err?.response?.data?.detail || 'Try another method.', variant: 'destructive' });
+      setSmsError(err?.response?.data?.detail || 'Could not send a text. Please try another sign-in method.');
     } finally {
       setLoading(false);
     }
@@ -159,7 +166,7 @@ export default function AdminLogin() {
       await sendEmailCode();
     } else if (method === 'sms') {
       setStep('sms');
-      await sendSmsCode();
+      if (!smsSent || smsCooldown <= 0) await sendSmsCode();
     } else if (method === 'backup') {
       setStep('backup');
     } else {
@@ -215,6 +222,7 @@ export default function AdminLogin() {
     setCode('');
     setChallengeToken('');
     setTrustDevice(false);
+    setSmsSent(false); setSmsError(''); setSmsCooldown(0);
   };
 
   return (
@@ -420,13 +428,14 @@ export default function AdminLogin() {
 
       {step === 'sms' && (
         <ChallengeCard
-          title="Check your texts"
-          hint={`We texted a 6-digit code to ${phoneHint || 'your phone'}. It expires in 10 minutes and may take up to a minute to arrive.`}
+          title={smsSent ? 'Check your texts' : 'Text verification'}
+          hint={smsSent ? `Code requested for ${phoneHint || 'your phone'}. It expires in 10 minutes. Delivery may take a moment.` : `Request a verification code for ${phoneHint || 'your verified phone'}.`}
           canSwitch
           onSwitch={() => setStep('choose')}
           onCancel={restart}
         >
           <form onSubmit={(e) => submitChallenge(e, 'sms')} data-testid="admin-2fa-sms-form">
+            {smsError && <p role="alert" data-testid="admin-2fa-sms-error" className="text-sm text-red-800 mb-4 break-words">{String(smsError)}</p>}
             <CodeInput
               value={code}
               onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
@@ -439,15 +448,15 @@ export default function AdminLogin() {
               <button
                 type="button"
                 onClick={sendSmsCode}
-                disabled={loading || resendCooldown > 0}
+                disabled={loading || smsCooldown > 0}
                 data-testid="admin-2fa-sms-resend"
                 className="text-xs text-[#6b4f3a] hover:text-[#1a1410] disabled:opacity-50"
               >
-                {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : (emailSentAt ? 'Resend text' : 'Send text')}
+                {smsCooldown > 0 ? `Resend in ${smsCooldown}s` : (smsSent ? 'Resend text' : 'Send text')}
               </button>
             </div>
             <TrustToggle trustDevice={trustDevice} setTrustDevice={setTrustDevice} />
-            <button type="submit" disabled={loading || code.length !== 6} data-testid="admin-2fa-sms-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60">
+            <button type="submit" disabled={loading || !smsSent || code.length !== 6} data-testid="admin-2fa-sms-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60">
               {loading ? 'Verifying\u2026' : 'Verify & sign in'}
             </button>
           </form>
@@ -504,14 +513,14 @@ function ChallengeCard({ title, hint, children, canSwitch, onSwitch, onCancel })
         <ShieldCheck className="w-5 h-5" />
         <span className="text-xs tracking-[0.2em] uppercase">Two-factor authentication</span>
       </div>
-      <h1 className="font-serif text-3xl text-[#1a1410] mb-2">{title}</h1>
-      <p className="text-sm text-[#5a4a3d] mb-6">{hint}</p>
+      <h1 data-testid="admin-challenge-title" className="font-serif text-3xl text-[#1a1410] mb-2">{title}</h1>
+      <p data-testid="admin-challenge-hint" className="text-sm text-[#5a4a3d] mb-6">{hint}</p>
       {children}
       <div className="flex items-center justify-between mt-4">
         {canSwitch ? (
           <button type="button" onClick={onSwitch} data-testid="admin-2fa-switch-method" className="text-xs text-[#6b4f3a] hover:text-[#1a1410]">Use a different method</button>
         ) : <span />}
-        <button type="button" onClick={onCancel} className="text-xs text-[#8b6b4f] hover:text-[#1a1410]">Use a different account</button>
+        <button type="button" onClick={onCancel} data-testid="admin-challenge-change-account" className="text-xs text-[#8b6b4f] hover:text-[#1a1410]">Use a different account</button>
       </div>
     </LoginCard>
   );
@@ -524,6 +533,7 @@ function CodeInput({ value, onChange, refEl, testid, placeholder, maxLength, upp
       <input
         ref={refEl}
         inputMode={upper ? 'text' : 'numeric'}
+        autoComplete={upper ? 'off' : 'one-time-code'}
         maxLength={maxLength}
         value={value}
         onChange={(e) => onChange(e.target.value)}

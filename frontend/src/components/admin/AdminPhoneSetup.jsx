@@ -3,86 +3,91 @@ import { MessageSquare, Trash2, Check } from 'lucide-react';
 import api from '../../lib/api';
 import { useToast } from '../../hooks/use-toast';
 
-const inputCls = 'w-full px-4 py-2.5 border border-[#e8dfd1] rounded-xl focus:border-[#6b4f3a] focus:outline-none bg-white text-sm';
+const inputCls = 'w-full min-w-0 px-4 py-2.5 border border-[#e8dfd1] rounded-xl focus:border-[#6b4f3a] focus:outline-none bg-white text-sm';
+const buttonCls = 'px-4 py-2.5 rounded-xl text-sm disabled:opacity-60 transition-colors';
 
 export default function AdminPhoneSetup({ me, onChange }) {
   const { toast } = useToast();
-  const [carriers, setCarriers] = useState([]);
   const [phone, setPhone] = useState('');
-  const [carrier, setCarrier] = useState('');
   const [code, setCode] = useState('');
   const [sentTo, setSentTo] = useState('');
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [cooldown, setCooldown] = useState(0);
 
-  useEffect(() => { api.get('/sms/carriers').then((r) => setCarriers(r.data || [])).catch(() => {}); }, []);
+  useEffect(() => {
+    if (cooldown <= 0) return undefined;
+    const id = setInterval(() => setCooldown((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(id);
+  }, [cooldown]);
 
   const send = async (e) => {
-    e.preventDefault();
-    setBusy(true);
+    e?.preventDefault();
+    if (busy) return;
+    setBusy(true); setError('');
     try {
-      const { data } = await api.put('/admin/me/phone', { phone, carrier });
-      setSentTo(data.sentTo);
-      toast({ title: 'Code sent', description: `We texted a verification code to ${data.sentTo}.` });
+      const { data } = await api.put('/admin/me/phone', { phone });
+      setSentTo(data.sentTo); setCode(''); setCooldown(data.resendAfterSeconds || 30);
     } catch (err) {
-      toast({ title: 'Couldn\u2019t send code', description: err?.response?.data?.detail || 'Try again.', variant: 'destructive' });
+      setError(err?.response?.data?.detail || 'Could not send a text. Please try again.');
     } finally { setBusy(false); }
   };
 
   const verify = async (e) => {
     e.preventDefault();
-    setBusy(true);
+    if (busy) return;
+    setBusy(true); setError('');
     try {
       const { data } = await api.post('/admin/me/phone/verify', { code });
       onChange(data.user);
       setSentTo(''); setCode(''); setPhone('');
-      toast({ title: 'Phone verified', description: '"Text me a code" is now available when you sign in.' });
+      toast({ title: 'Phone verified', description: 'Text verification is now available when you sign in.' });
     } catch (err) {
-      toast({ title: 'Wrong code', description: err?.response?.data?.detail || 'Try again.', variant: 'destructive' });
-      setCode('');
+      setError(err?.response?.data?.detail || 'Could not verify the code. Please try again.'); setCode('');
     } finally { setBusy(false); }
   };
 
   const remove = async () => {
-    if (!window.confirm('Remove your phone number? SMS codes will no longer be offered at sign-in.')) return;
-    const { data } = await api.delete('/admin/me/phone');
-    onChange(data.user);
-    toast({ title: 'Phone removed' });
+    if (busy || !window.confirm('Remove your phone number? Text verification will no longer be offered at sign-in.')) return;
+    setBusy(true); setError('');
+    try {
+      const { data } = await api.delete('/admin/me/phone');
+      onChange(data.user); setSentTo(''); setCode(''); setPhone('');
+      toast({ title: 'Phone removed' });
+    } catch (err) { setError(err?.response?.data?.detail || 'Could not remove the number. Please try again.'); }
+    finally { setBusy(false); }
   };
 
   return (
     <div className="space-y-4" data-testid="admin-phone-setup">
-      <p className="text-sm text-[#5a4a3d] -mt-1">Add a mobile number to receive sign-in codes by text. Codes are delivered through your carrier&apos;s free text gateway (US &amp; Canada).</p>
+      <p data-testid="admin-phone-description" className="text-sm text-[#5a4a3d] -mt-1">Mobile and Google Voice numbers accepted. SMS delivery depends on your provider.</p>
       {me?.phone && (
-        <div className="flex items-center justify-between border border-[#e8dfd1] rounded-xl px-4 py-3 bg-[#faf6f0]" data-testid="admin-phone-current">
-          <span className="inline-flex items-center gap-2 text-sm text-[#1a1410]"><Check className="w-4 h-4 text-green-700" /> {me.phone} <span className="text-xs text-[#8b6b4f]">({carriers.find((c) => c.id === me.phoneCarrier)?.name || me.phoneCarrier})</span></span>
-          <button type="button" onClick={remove} data-testid="admin-phone-remove" className="text-xs px-3 py-1.5 border border-[#e8dfd1] rounded-lg hover:bg-white inline-flex items-center gap-1 text-red-700"><Trash2 className="w-3 h-3" /> Remove</button>
+        <div className="flex flex-wrap gap-3 items-center justify-between border border-[#e8dfd1] rounded-xl px-4 py-3 bg-[#faf6f0]" data-testid="admin-phone-current">
+          <span data-testid="admin-phone-verified-number" className="inline-flex items-center gap-2 text-sm text-[#1a1410]"><Check className="w-4 h-4 text-green-700" /> {me.phone}</span>
+          <button type="button" disabled={busy} onClick={remove} data-testid="admin-phone-remove" className="text-xs px-3 py-1.5 border border-[#e8dfd1] rounded-lg hover:bg-white inline-flex items-center gap-1 text-red-700 disabled:opacity-60"><Trash2 className="w-3 h-3" /> Remove</button>
         </div>
       )}
       {!sentTo ? (
-        <form onSubmit={send} className="grid sm:grid-cols-[1fr,1fr,auto] gap-3 items-end">
-          <div>
-            <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-1.5">{me?.phone ? 'New mobile number' : 'Mobile number'}</label>
-            <input type="tel" required value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(555) 123-4567" data-testid="admin-phone-input" className={inputCls} />
+        <form onSubmit={send} data-testid="admin-phone-number-form" className="grid sm:grid-cols-[minmax(0,1fr),auto] gap-3 items-end">
+          <div className="min-w-0">
+            <label htmlFor="admin-setup-phone" className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-1.5">{me?.phone ? 'New phone number' : 'Phone number'}</label>
+            <input id="admin-setup-phone" type="tel" autoComplete="tel" required disabled={busy} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1 (415) 555-0123" data-testid="admin-phone-input" className={inputCls} />
           </div>
-          <div>
-            <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-1.5">Carrier</label>
-            <select required value={carrier} onChange={(e) => setCarrier(e.target.value)} data-testid="admin-phone-carrier" className={inputCls}>
-              <option value="">Select carrier</option>
-              {carriers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
-          <button type="submit" disabled={busy} data-testid="admin-phone-send" className="px-4 py-2.5 bg-[#1a1410] text-[#faf6f0] rounded-xl text-sm hover:bg-[#6b4f3a] disabled:opacity-60 inline-flex items-center gap-2"><MessageSquare className="w-4 h-4" /> {busy ? 'Sending\u2026' : 'Text me a code'}</button>
+          <button type="submit" disabled={busy} data-testid="admin-phone-send" className={`${buttonCls} bg-[#1a1410] text-[#faf6f0] hover:bg-[#6b4f3a] inline-flex justify-center items-center gap-2`}><MessageSquare className="w-4 h-4 shrink-0" /> {busy ? 'Sending…' : 'Text me a code'}</button>
         </form>
       ) : (
-        <form onSubmit={verify} className="flex flex-wrap gap-3 items-end">
-          <div>
-            <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-1.5">Code sent to {sentTo}</label>
-            <input inputMode="numeric" maxLength={6} required value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" data-testid="admin-phone-code" className={`${inputCls} w-40 text-center tracking-[0.4em]`} />
+        <form onSubmit={verify} data-testid="admin-phone-code-form" className="flex flex-wrap gap-3 items-end">
+          <div className="w-full">
+            <label htmlFor="admin-setup-code" data-testid="admin-phone-sent-to" className="block text-xs uppercase text-[#8b6b4f] mb-1.5">Code requested for {sentTo} · expires in 10 minutes</label>
+            <input id="admin-setup-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required autoFocus disabled={busy} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" data-testid="admin-phone-code" className={`${inputCls} max-w-48 text-center tracking-[0.4em]`} />
           </div>
-          <button type="submit" disabled={busy || code.length !== 6} data-testid="admin-phone-verify" className="px-4 py-2.5 bg-[#1a1410] text-[#faf6f0] rounded-xl text-sm hover:bg-[#6b4f3a] disabled:opacity-60">{busy ? 'Verifying\u2026' : 'Verify'}</button>
-          <button type="button" onClick={() => setSentTo('')} data-testid="admin-phone-cancel" className="px-4 py-2.5 border border-[#e8dfd1] rounded-xl text-sm hover:bg-[#faf6f0]">Cancel</button>
+          <button type="submit" disabled={busy || code.length !== 6} data-testid="admin-phone-verify" className={`${buttonCls} bg-[#1a1410] text-[#faf6f0] hover:bg-[#6b4f3a]`}>{busy ? 'Verifying…' : 'Verify'}</button>
+          <button type="button" disabled={busy || cooldown > 0} onClick={() => send()} data-testid="admin-phone-resend" className={`${buttonCls} border border-[#e8dfd1] hover:bg-[#faf6f0]`}>{cooldown ? `Resend in ${cooldown}s` : 'Resend code'}</button>
+          <button type="button" disabled={busy} onClick={() => { setSentTo(''); setCode(''); setError(''); }} data-testid="admin-phone-cancel" className={`${buttonCls} border border-[#e8dfd1] hover:bg-[#faf6f0]`}>Change number</button>
         </form>
       )}
+      {error && <p role="alert" data-testid="admin-phone-error" className="text-sm text-red-800 break-words">{String(error)}</p>}
+      <p data-testid="admin-phone-consent" className="text-xs text-[#8b6b4f]">Requesting a code authorizes a verification text. Message and data rates may apply.</p>
     </div>
   );
 }

@@ -6,7 +6,7 @@ import logging
 import os
 import smtplib
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -31,6 +31,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr
 from starlette.middleware.cors import CORSMiddleware
+from sms_service import normalize_phone as _normalize_phone, mask_phone as _mask_phone
+from sms_otp import PhoneCodeResponse, send_code as send_sms_code, consume_code as consume_sms_code, revoke_admin_codes
+from auth_throttle import check_password_attempt
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -52,8 +55,10 @@ import secrets as _secrets
 import pyotp
 import qrcode as _qrcode
 
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "1121211221")
-JWT_SECRET = os.environ.get("JWT_SECRET", "change-me")
+ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+JWT_SECRET = os.environ["JWT_SECRET"]
+if not ADMIN_PASSWORD or not JWT_SECRET:
+    raise RuntimeError("Admin password and signing secret must be configured")
 JWT_ALG = "HS256"
 JWT_DAYS = 30
 TOTP_ISSUER = "Essential Gemstones Admin"
@@ -275,64 +280,6 @@ async def _otp_resend_wait(coll: Any, key: str) -> int:
     return max(0, EMAIL_OTP_RESEND_SECONDS - int((datetime.utcnow() - last).total_seconds()))
 
 
-# ---------- SMS via carrier email-to-text gateways (no SMS provider needed) ---------- #
-
-SMS_CARRIERS: dict[str, tuple[str, str]] = {
-    "att": ("AT&T", "txt.att.net"),
-    "verizon": ("Verizon", "vtext.com"),
-    "tmobile": ("T-Mobile", "tmomail.net"),
-    "sprint": ("Sprint", "messaging.sprintpcs.com"),
-    "uscellular": ("US Cellular", "email.uscc.net"),
-    "boost": ("Boost Mobile", "sms.myboostmobile.com"),
-    "cricket": ("Cricket Wireless", "sms.cricketwireless.net"),
-    "metro": ("Metro by T-Mobile", "mymetropcs.com"),
-    "googlefi": ("Google Fi", "msg.fi.google.com"),
-    "xfinity": ("Xfinity Mobile", "vtext.com"),
-    "visible": ("Visible", "vtext.com"),
-    "mint": ("Mint Mobile", "tmomail.net"),
-    "straighttalk": ("Straight Talk", "vtext.com"),
-    "consumer": ("Consumer Cellular", "mailmymobile.net"),
-    "rogers": ("Rogers (CA)", "pcs.rogers.com"),
-    "bell": ("Bell (CA)", "txt.bell.ca"),
-    "telus": ("Telus (CA)", "msg.telus.com"),
-    "fido": ("Fido (CA)", "fido.ca"),
-    "koodo": ("Koodo (CA)", "msg.koodomobile.com"),
-    "freedom": ("Freedom Mobile (CA)", "txt.freedommobile.ca"),
-}
-
-
-def _carrier_list() -> list[dict]:
-    return [{"id": k, "name": v[0]} for k, v in SMS_CARRIERS.items()]
-
-
-def _normalize_phone(raw: str) -> str:
-    digits = "".join(ch for ch in (raw or "") if ch.isdigit())
-    if len(digits) == 11 and digits.startswith("1"):
-        digits = digits[1:]
-    if len(digits) != 10:
-        raise HTTPException(status_code=400, detail="Enter a valid 10-digit US or Canadian mobile number.")
-    return digits
-
-
-def _normalize_carrier(raw: str) -> str:
-    key = (raw or "").strip().lower()
-    if key not in SMS_CARRIERS:
-        raise HTTPException(status_code=400, detail="Please pick your mobile carrier from the list.")
-    return key
-
-
-def _mask_phone(phone: str) -> str:
-    return f"(•••) •••-{phone[-4:]}" if phone else ""
-
-
-def _sms_gateway_address(phone: str, carrier: str) -> str:
-    return f"{phone}@{SMS_CARRIERS[carrier][1]}"
-
-
-async def send_sms(phone: str, carrier: str, text: str) -> None:
-    await send_email(_sms_gateway_address(phone, carrier), "Essential Gemstones", "", text=text)
-
-
 # ---------- Trusted-Device tokens (30-day "skip 2FA on this device") ---------- #
 
 TRUSTED_DEVICE_DAYS = 30
@@ -525,7 +472,6 @@ def doc_to_admin(doc: dict) -> dict:
         "isSuper": bool(doc.get("isSuper")),
         "twoFactorEnabled": bool(doc.get("twoFactorEnabled")),
         "phone": _mask_phone(doc.get("phone") or "") or None,
-        "phoneCarrier": doc.get("phoneCarrier"),
         "createdAt": doc.get("createdAt"),
     }
 
@@ -741,9 +687,11 @@ async def admin_login(data: LoginIn, request: Request) -> dict:
     # Master password shortcut is removed. All logins go through the admins collection.
     if not data.username or not data.password:
         raise HTTPException(status_code=400, detail="Username and password are required.")
+    attempt_key = await check_password_attempt(db, "admin", data.username)
     doc = await db.admins.find_one({"username": data.username.lower().strip()})
     if not doc or not verify_password(data.password, doc.get("passwordHash", "")):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    await db.password_attempts.delete_one({"_id": attempt_key})
 
     if doc.get("twoFactorEnabled"):
         # If the browser presents a valid trusted-device token for this admin, skip 2FA.
@@ -792,7 +740,7 @@ def _available_2fa_methods(doc: dict) -> list[str]:
     methods = ["totp"]
     if (doc.get("email") or "").strip():
         methods.append("email")
-    if (doc.get("phone") or "").strip() and doc.get("phoneCarrier") in SMS_CARRIERS:
+    if (doc.get("phone") or "").strip() and doc.get("phoneVerifiedAt"):
         methods.append("sms")
     return methods
 
@@ -882,7 +830,7 @@ async def admin_2fa_login(payload: TwoFactorLoginIn, request: Request, admin: di
     if method == "email":
         verified = await _consume_email_otp(doc["_id"], code)
     elif method == "sms":
-        verified = await _consume_email_otp(doc["_id"], code, db.admin_sms_otps)
+        verified = bool(doc.get("phoneVerifiedAt") and doc.get("phone") and await consume_sms_code(db.admin_sms_otps, doc["_id"], code, _normalize_phone(doc["phone"])))
     elif method == "backup":
         idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
         if idx >= 0:
@@ -901,7 +849,7 @@ async def admin_2fa_login(payload: TwoFactorLoginIn, request: Request, admin: di
             has_pending_sms_otp = await db.admin_sms_otps.find_one({"_id": doc["_id"]}) is not None
             if has_pending_email_otp and await _consume_email_otp(doc["_id"], code):
                 verified = True
-            elif has_pending_sms_otp and await _consume_email_otp(doc["_id"], code, db.admin_sms_otps):
+            elif has_pending_sms_otp and doc.get("phoneVerifiedAt") and doc.get("phone") and await consume_sms_code(db.admin_sms_otps, doc["_id"], code, _normalize_phone(doc["phone"])):
                 verified = True
             else:
                 idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
@@ -989,31 +937,16 @@ async def admin_2fa_methods(admin: dict = Depends(require_challenge_2fa)) -> dic
     }
 
 
-@app.post("/api/admin/2fa/sms/send")
+@app.post("/api/admin/2fa/sms/send", response_model=PhoneCodeResponse)
 async def admin_2fa_sms_send(admin: dict = Depends(require_challenge_2fa)) -> dict:
-    """Text a one-time 6-digit code to the admin's verified phone (via carrier email-to-SMS gateway)."""
+    """Text a one-time code to the admin's verified number through Twilio."""
     doc = await db.admins.find_one({"_id": admin["sub"]})
     if not doc or not doc.get("twoFactorEnabled"):
         raise HTTPException(status_code=400, detail="2FA is not enabled for this admin.")
-    phone, carrier = (doc.get("phone") or ""), (doc.get("phoneCarrier") or "")
-    if not phone or carrier not in SMS_CARRIERS:
+    phone = doc.get("phone") or ""
+    if not phone or not doc.get("phoneVerifiedAt"):
         raise HTTPException(status_code=400, detail="No verified phone on this admin account. Add one in the dashboard, or use another method.")
-    wait = await _otp_resend_wait(db.admin_sms_otps, doc["_id"])
-    if wait > 0:
-        raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another code.")
-    code = _new_email_otp()
-    await _store_email_otp(doc["_id"], code, db.admin_sms_otps)
-    try:
-        await send_sms(phone, carrier, f"Essential Gemstones admin code: {code}. Expires in {EMAIL_OTP_TTL_MINUTES} min.")
-    except Exception as e:
-        logging.exception("Failed to send admin 2FA SMS OTP")
-        raise HTTPException(status_code=502, detail=f"Couldn\u2019t send the text: {e}")
-    return {
-        "ok": True,
-        "sentTo": _mask_phone(phone),
-        "expiresInMinutes": EMAIL_OTP_TTL_MINUTES,
-        "resendAfterSeconds": EMAIL_OTP_RESEND_SECONDS,
-    }
+    return await send_sms_code(db, db.admin_sms_otps, doc["_id"], _normalize_phone(phone), "admin sign-in")
 
 
 # ---- Admin phone (self-service, verified by SMS) ---- #
@@ -1021,53 +954,38 @@ async def admin_2fa_sms_send(admin: dict = Depends(require_challenge_2fa)) -> di
 
 class AdminPhoneIn(BaseModel):
     phone: str
-    carrier: str
 
 
-@app.get("/api/sms/carriers")
-async def sms_carriers() -> list[dict]:
-    return _carrier_list()
-
-
-@app.put("/api/admin/me/phone")
+@app.put("/api/admin/me/phone", response_model=PhoneCodeResponse)
 async def admin_set_phone(payload: AdminPhoneIn, admin: dict = Depends(require_admin)) -> dict:
     """Start adding a phone: store as pending and text a verification code."""
     phone = _normalize_phone(payload.phone)
-    carrier = _normalize_carrier(payload.carrier)
-    wait = await _otp_resend_wait(db.admin_phone_verify, admin["sub"])
-    if wait > 0:
-        raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another code.")
-    code = _new_email_otp()
-    await _store_email_otp(admin["sub"], code, db.admin_phone_verify)
-    await db.admins.update_one({"_id": admin["sub"]}, {"$set": {"pendingPhone": phone, "pendingPhoneCarrier": carrier}})
-    try:
-        await send_sms(phone, carrier, f"Essential Gemstones: your phone verification code is {code}.")
-    except Exception as e:
-        logging.exception("Failed to send admin phone verification SMS")
-        raise HTTPException(status_code=502, detail=f"Couldn\u2019t send the text: {e}")
-    return {"ok": True, "sentTo": _mask_phone(phone), "resendAfterSeconds": EMAIL_OTP_RESEND_SECONDS}
+    return await send_sms_code(db, db.admin_phone_verify, admin["sub"], phone, "phone verification")
 
 
 @app.post("/api/admin/me/phone/verify")
 async def admin_verify_phone(payload: TwoFactorVerifyIn, admin: dict = Depends(require_admin)) -> dict:
     doc = await db.admins.find_one({"_id": admin["sub"]})
-    if not doc or not doc.get("pendingPhone"):
-        raise HTTPException(status_code=400, detail="No phone number is waiting for verification.")
-    if not await _consume_email_otp(admin["sub"], payload.code, db.admin_phone_verify):
+    if not doc:
+        raise HTTPException(status_code=404, detail="Admin not found.")
+    verified = await consume_sms_code(db.admin_phone_verify, admin["sub"], payload.code)
+    if not verified:
         raise HTTPException(status_code=401, detail="Invalid or expired code.")
     await db.admins.update_one(
         {"_id": admin["sub"]},
         {
-            "$set": {"phone": doc["pendingPhone"], "phoneCarrier": doc["pendingPhoneCarrier"], "phoneVerifiedAt": datetime.utcnow().isoformat()},
-            "$unset": {"pendingPhone": "", "pendingPhoneCarrier": ""},
+            "$set": {"phone": verified["phone"], "phoneVerifiedAt": datetime.now(timezone.utc).isoformat()},
+            "$unset": {"phoneCarrier": "", "pendingPhone": "", "pendingPhoneCarrier": ""},
         },
     )
+    await db.admin_sms_otps.delete_one({"_id": admin["sub"]})
     fresh = await db.admins.find_one({"_id": admin["sub"]})
     return {"ok": True, "user": doc_to_admin(fresh)}
 
 
 @app.delete("/api/admin/me/phone")
 async def admin_remove_phone(admin: dict = Depends(require_admin)) -> dict:
+    await revoke_admin_codes(db, admin["sub"])
     await db.admins.update_one(
         {"_id": admin["sub"]},
         {"$unset": {"phone": "", "phoneCarrier": "", "phoneVerifiedAt": "", "pendingPhone": "", "pendingPhoneCarrier": ""}},
@@ -1135,6 +1053,7 @@ async def admin_2fa_disable(payload: TwoFactorVerifyIn, admin: dict = Depends(re
     # Revoke all trusted devices tied to this admin
     await db.admin_trusted_devices.delete_many({"adminId": doc["_id"]})
     await db.admin_email_otps.delete_one({"_id": doc["_id"]})
+    await revoke_admin_codes(db, doc["_id"])
     return {"ok": True}
 
 
@@ -1185,6 +1104,7 @@ async def admin_2fa_reset(admin_id: str, admin: dict = Depends(require_admin)) -
     )
     await db.admin_trusted_devices.delete_many({"adminId": admin_id})
     await db.admin_email_otps.delete_one({"_id": admin_id})
+    await revoke_admin_codes(db, admin_id)
     return {"ok": True}
 
 
@@ -1771,66 +1691,49 @@ async def auth_register(payload: UserRegisterIn) -> dict:
 @app.post("/api/auth/login")
 async def auth_login(payload: UserLoginIn) -> dict:
     email = str(payload.email).strip().lower()
+    attempt_key = await check_password_attempt(db, "user", email)
     doc = await db.users.find_one({"email": email})
     if not doc or not verify_password(payload.password, doc.get("passwordHash", "")):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    await db.password_attempts.delete_one({"_id": attempt_key})
     if doc.get("isBanned"):
         raise HTTPException(status_code=403, detail="Your account has been suspended.")
     token = make_user_token(doc["_id"], doc["email"])
     return {"token": token, "user": user_to_public(doc)}
 
 
-# ---------- Sign in / sign up with phone (SMS code via carrier gateway) ---------- #
+# ---------- Sign in / sign up with phone (Twilio SMS) ---------- #
 
 
 class PhoneSendIn(BaseModel):
     phone: str
-    carrier: str
 
 
 class PhoneVerifyIn(BaseModel):
     phone: str
-    carrier: str
     code: str
     fullName: Optional[str] = None
 
 
-@app.post("/api/auth/phone/send")
+@app.post("/api/auth/phone/send", response_model=PhoneCodeResponse)
 async def auth_phone_send(payload: PhoneSendIn) -> dict:
     phone = _normalize_phone(payload.phone)
-    carrier = _normalize_carrier(payload.carrier)
-    wait = await _otp_resend_wait(db.phone_otps, phone)
-    if wait > 0:
-        raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another code.")
-    code = _new_email_otp()
-    await _store_email_otp(phone, code, db.phone_otps)
-    try:
-        await send_sms(phone, carrier, f"Essential Gemstones: your sign-in code is {code}. Expires in {EMAIL_OTP_TTL_MINUTES} min.")
-    except Exception as e:
-        logging.exception("Failed to send member phone OTP")
-        raise HTTPException(status_code=502, detail=f"Couldn\u2019t send the text: {e}")
-    existing = await db.users.find_one({"phone": phone})
-    return {
-        "ok": True,
-        "sentTo": _mask_phone(phone),
-        "isNew": existing is None,
-        "expiresInMinutes": EMAIL_OTP_TTL_MINUTES,
-        "resendAfterSeconds": EMAIL_OTP_RESEND_SECONDS,
-    }
+    return await send_sms_code(db, db.phone_otps, phone, phone, "sign-in")
 
 
 @app.post("/api/auth/phone/verify")
 async def auth_phone_verify(payload: PhoneVerifyIn) -> dict:
     phone = _normalize_phone(payload.phone)
-    carrier = _normalize_carrier(payload.carrier)
-    if not await _consume_email_otp(phone, payload.code, db.phone_otps):
+    if not await consume_sms_code(db.phone_otps, phone, payload.code, phone):
         raise HTTPException(status_code=401, detail="Invalid or expired code. Request a new one.")
-    doc = await db.users.find_one({"phone": phone})
+    # Preserve accounts created under the old ten-digit carrier-gateway format.
+    aliases = [phone, phone[2:]] if phone.startswith("+1") else [phone]
+    doc = await db.users.find_one({"phone": {"$in": aliases}})
     if doc:
         if doc.get("isBanned"):
             raise HTTPException(status_code=403, detail="Your account has been suspended.")
-        if doc.get("phoneCarrier") != carrier:
-            await db.users.update_one({"_id": doc["_id"]}, {"$set": {"phoneCarrier": carrier}})
+        await db.users.update_one({"_id": doc["_id"]}, {"$set": {"phone": phone}, "$unset": {"phoneCarrier": ""}})
+        doc["phone"] = phone
     else:
         name = (payload.fullName or "").strip()
         doc = {
@@ -1838,12 +1741,11 @@ async def auth_phone_verify(payload: PhoneVerifyIn) -> dict:
             "fullName": name if len(name) >= 2 else f"Member \u2022{phone[-4:]}",
             "email": "",
             "phone": phone,
-            "phoneCarrier": carrier,
             "passwordHash": "",
             "isBanned": False,
             "favorites": [],
             "authProvider": "phone",
-            "createdAt": datetime.utcnow().isoformat(),
+            "createdAt": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(doc)
     token = make_user_token(doc["_id"], doc.get("email") or "")
@@ -2107,10 +2009,16 @@ async def admin_delete_user(user_id: str, admin: dict = Depends(require_admin)) 
 
 # ---------------- MIDDLEWARE ---------------- #
 
+cors_origins = [origin.strip().rstrip("/") for origin in os.environ["CORS_ORIGINS"].split(",") if origin.strip()]
+if not cors_origins or "*" in cors_origins:
+    raise RuntimeError("CORS_ORIGINS must explicitly list trusted website origins")
+# The trusted preview proxy may forward its configured internal app origin.
+if os.environ.get("APP_URL"):
+    cors_origins.append(os.environ["APP_URL"].rstrip("/"))
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -2130,6 +2038,8 @@ async def _startup_seed_admin() -> None:
       (prevents lock-outs after env changes / test drift). Logs a warning when it self-heals.
     - 2FA is NEVER re-enabled or wiped by this hook — that's a manual admin action.
     """
+    for collection in (db.phone_otps, db.admin_sms_otps, db.admin_phone_verify, db.sms_send_limits, db.password_attempts):
+        await collection.create_index("expires_at", expireAfterSeconds=0)
     try:
         existing_master = await db.admins.find_one({"username": "master"})
         if not existing_master:
@@ -2961,6 +2871,7 @@ async def _apply_admin_action(action_obj: dict, caller: dict) -> dict:
         await db.admins.delete_one({"_id": target["_id"]})
         await db.admin_trusted_devices.delete_many({"adminId": target["_id"]})
         await db.admin_email_otps.delete_one({"_id": target["_id"]})
+        await revoke_admin_codes(db, target["_id"])
         return {"ok": True, "action": "delete", "summary": f"Deleted admin '{target.get('username')}'."}
 
     if action == "resetpassword":
@@ -2986,6 +2897,7 @@ async def _apply_admin_action(action_obj: dict, caller: dict) -> dict:
         )
         await db.admin_trusted_devices.delete_many({"adminId": target["_id"]})
         await db.admin_email_otps.delete_one({"_id": target["_id"]})
+        await revoke_admin_codes(db, target["_id"])
         return {"ok": True, "action": "reset2fa", "summary": f"Reset 2FA for '{target.get('username')}'. They\u2019ll enroll again on their next login."}
 
     return {"ok": False, "error": f"unhandled action '{action}'"}
