@@ -21,6 +21,22 @@ api.interceptors.request.use((cfg) => {
   return cfg;
 });
 
+// Start a Stripe checkout for a single product. If the admin pasted an external
+// Stripe payment link (buyUrl) we use that; otherwise we create a built-in
+// Stripe Checkout session from the product's price and redirect to it.
+export async function startProductCheckout(product) {
+  if (product?.buyUrl) {
+    window.open(product.buyUrl, '_blank', 'noopener');
+    return { external: true };
+  }
+  const { data } = await api.post('/payments/checkout', {
+    product_id: product.id,
+    origin_url: window.location.origin,
+  });
+  if (data?.checkout_url) window.location.href = data.checkout_url;
+  return data;
+}
+
 export function resolveMediaUrl(url) {
   if (!url) return '';
   if (url.startsWith('http://') || url.startsWith('https://')) return url;

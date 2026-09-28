@@ -31,8 +31,6 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr
 from starlette.middleware.cors import CORSMiddleware
-from sms_service import normalize_phone as _normalize_phone, mask_phone as _mask_phone
-from sms_otp import PhoneCodeResponse, send_code as send_sms_code, consume_code as consume_sms_code, revoke_admin_codes
 from auth_throttle import check_password_attempt
 
 ROOT_DIR = Path(__file__).parent
@@ -54,6 +52,7 @@ import secrets as _secrets
 
 import pyotp
 import qrcode as _qrcode
+import stripe
 
 ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 JWT_SECRET = os.environ["JWT_SECRET"]
@@ -68,7 +67,7 @@ SETUP_TOKEN_MINUTES = 30
 
 SECTION_PERMS = [
     "navbar", "hero", "products", "story", "promise", "chakra", "stats",
-    "lavaMeaning", "founder", "craft", "faq", "gallery", "vip", "footer",
+    "lavaMeaning", "founder", "craft", "faq", "gallery", "vip", "nanoAI", "footer",
 ]
 META_PERMS = ["sectionOrder", "sectionVisibility", "manage_admins", "manage_subscribers", "manage_users"]
 ALL_PERMS = SECTION_PERMS + META_PERMS
@@ -471,7 +470,6 @@ def doc_to_admin(doc: dict) -> dict:
         "permissions": doc.get("permissions", []),
         "isSuper": bool(doc.get("isSuper")),
         "twoFactorEnabled": bool(doc.get("twoFactorEnabled")),
-        "phone": _mask_phone(doc.get("phone") or "") or None,
         "createdAt": doc.get("createdAt"),
     }
 
@@ -633,6 +631,21 @@ def default_site() -> dict:
             "lockedText": "Discount code, early access to new drops, free bracelet re-stringing, and studio stories \u2014 free with your Essential Gemstones account.",
             "lockedCtaLabel": "Join free",
         },
+        "nanoAI": {
+            "kicker": "A Little Something Extra",
+            "title": "Meet Nano AI",
+            "subtitle": "You can also try out this business I've created called Nano AI \u2014 a personal AI chat companion that remembers helpful details, organizes your conversations, and gives you smart tools all in one simple place.",
+            "image": "https://static.prod-images.emergentagent.com/jobs/2fde6317-a09a-43de-a20a-f1efe8d5d18d/images/a1df6793579e597138f81758ad1d4bf332dddc3df2909d9e59fdde83c7fffe1e.jpeg",
+            "features": [
+                {"title": "Personalized memory", "desc": "Nano remembers your preferences and context across every conversation."},
+                {"title": "17 AI models", "desc": "Switch between models from OpenAI, Anthropic, and Google \u2014 all in one place."},
+                {"title": "Create anything", "desc": "Generate documents, images, and even short videos from a simple message."},
+                {"title": "Free to start", "desc": "Start chatting in seconds \u2014 no credit card required for the Free plan."},
+            ],
+            "ctaLabel": "Try Nano AI",
+            "ctaUrl": "https://nano-ai.org",
+            "note": "Another creation by Luca",
+        },
         "footer": {
             "brand": "Essential Gemstones",
             "tagline": "Join our growing community of crystal lovers, nature seekers, and everyday wearers. Be the first to know about new collections, restocks, and stories from the studio.",
@@ -649,8 +662,8 @@ def default_site() -> dict:
             "quote": "\u201cThank you from the bottom of my heart.\u201d \u2014 Luca",
             "socials": {"instagram": "#", "facebook": "#"},
         },
-        "sectionOrder": ["hero", "products", "story", "promise", "chakra", "stats", "lavaMeaning", "founder", "craft", "faq", "gallery", "vip"],
-        "sectionVisibility": {k: True for k in ["hero", "products", "story", "promise", "chakra", "stats", "lavaMeaning", "founder", "craft", "faq", "gallery", "vip"]},
+        "sectionOrder": ["hero", "products", "story", "promise", "chakra", "stats", "lavaMeaning", "founder", "craft", "faq", "gallery", "vip", "nanoAI"],
+        "sectionVisibility": {k: True for k in ["hero", "products", "story", "promise", "chakra", "stats", "lavaMeaning", "founder", "craft", "faq", "gallery", "vip", "nanoAI"]},
     }
 
 
@@ -671,7 +684,20 @@ async def get_site_doc() -> dict:
         await db.site.insert_one(doc)
     doc.pop("_id", None)
     # Fill any missing keys from defaults so partial saves can never blank out a section
-    return _deep_merge(default_site(), doc)
+    merged = _deep_merge(default_site(), doc)
+    # Ensure newly-added sections (e.g. nanoAI) always appear in the order/visibility maps
+    # even when an older saved doc has a shorter sectionOrder array.
+    default_order = default_site()["sectionOrder"]
+    order = list(merged.get("sectionOrder") or [])
+    for key in default_order:
+        if key not in order:
+            order.append(key)
+    merged["sectionOrder"] = order
+    vis = dict(merged.get("sectionVisibility") or {})
+    for key in default_order:
+        vis.setdefault(key, True)
+    merged["sectionVisibility"] = vis
+    return merged
 
 
 # ---------------- ROUTES ---------------- #
@@ -712,7 +738,6 @@ async def admin_login(data: LoginIn, request: Request) -> dict:
             "username": doc["username"],
             "availableMethods": _available_2fa_methods(doc),
             "emailHint": _obfuscate_email(doc.get("email") or "") if doc.get("email") else None,
-            "phoneHint": _mask_phone(doc.get("phone") or "") or None,
         }
 
     # 2FA not yet enrolled — issue a setup-only token so the admin must enroll before doing anything.
@@ -740,8 +765,6 @@ def _available_2fa_methods(doc: dict) -> list[str]:
     methods = ["totp"]
     if (doc.get("email") or "").strip():
         methods.append("email")
-    if (doc.get("phone") or "").strip() and doc.get("phoneVerifiedAt"):
-        methods.append("sms")
     return methods
 
 
@@ -829,8 +852,6 @@ async def admin_2fa_login(payload: TwoFactorLoginIn, request: Request, admin: di
     verified = False
     if method == "email":
         verified = await _consume_email_otp(doc["_id"], code)
-    elif method == "sms":
-        verified = bool(doc.get("phoneVerifiedAt") and doc.get("phone") and await consume_sms_code(db.admin_sms_otps, doc["_id"], code, _normalize_phone(doc["phone"])))
     elif method == "backup":
         idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
         if idx >= 0:
@@ -846,10 +867,7 @@ async def admin_2fa_login(payload: TwoFactorLoginIn, request: Request, admin: di
             verified = True
         else:
             has_pending_email_otp = await db.admin_email_otps.find_one({"_id": doc["_id"]}) is not None
-            has_pending_sms_otp = await db.admin_sms_otps.find_one({"_id": doc["_id"]}) is not None
             if has_pending_email_otp and await _consume_email_otp(doc["_id"], code):
-                verified = True
-            elif has_pending_sms_otp and doc.get("phoneVerifiedAt") and doc.get("phone") and await consume_sms_code(db.admin_sms_otps, doc["_id"], code, _normalize_phone(doc["phone"])):
                 verified = True
             else:
                 idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
@@ -932,66 +950,8 @@ async def admin_2fa_methods(admin: dict = Depends(require_challenge_2fa)) -> dic
     return {
         "methods": methods,
         "emailHint": _obfuscate_email(doc.get("email") or "") if doc.get("email") else None,
-        "phoneHint": _mask_phone(doc.get("phone") or "") or None,
         "hasBackupCodes": bool(doc.get("twoFactorBackupCodes")),
     }
-
-
-@app.post("/api/admin/2fa/sms/send", response_model=PhoneCodeResponse)
-async def admin_2fa_sms_send(admin: dict = Depends(require_challenge_2fa)) -> dict:
-    """Text a one-time code to the admin's verified number through Twilio."""
-    doc = await db.admins.find_one({"_id": admin["sub"]})
-    if not doc or not doc.get("twoFactorEnabled"):
-        raise HTTPException(status_code=400, detail="2FA is not enabled for this admin.")
-    phone = doc.get("phone") or ""
-    if not phone or not doc.get("phoneVerifiedAt"):
-        raise HTTPException(status_code=400, detail="No verified phone on this admin account. Add one in the dashboard, or use another method.")
-    return await send_sms_code(db, db.admin_sms_otps, doc["_id"], _normalize_phone(phone), "admin sign-in")
-
-
-# ---- Admin phone (self-service, verified by SMS) ---- #
-
-
-class AdminPhoneIn(BaseModel):
-    phone: str
-
-
-@app.put("/api/admin/me/phone", response_model=PhoneCodeResponse)
-async def admin_set_phone(payload: AdminPhoneIn, admin: dict = Depends(require_admin)) -> dict:
-    """Start adding a phone: store as pending and text a verification code."""
-    phone = _normalize_phone(payload.phone)
-    return await send_sms_code(db, db.admin_phone_verify, admin["sub"], phone, "phone verification")
-
-
-@app.post("/api/admin/me/phone/verify")
-async def admin_verify_phone(payload: TwoFactorVerifyIn, admin: dict = Depends(require_admin)) -> dict:
-    doc = await db.admins.find_one({"_id": admin["sub"]})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Admin not found.")
-    verified = await consume_sms_code(db.admin_phone_verify, admin["sub"], payload.code)
-    if not verified:
-        raise HTTPException(status_code=401, detail="Invalid or expired code.")
-    await db.admins.update_one(
-        {"_id": admin["sub"]},
-        {
-            "$set": {"phone": verified["phone"], "phoneVerifiedAt": datetime.now(timezone.utc).isoformat()},
-            "$unset": {"phoneCarrier": "", "pendingPhone": "", "pendingPhoneCarrier": ""},
-        },
-    )
-    await db.admin_sms_otps.delete_one({"_id": admin["sub"]})
-    fresh = await db.admins.find_one({"_id": admin["sub"]})
-    return {"ok": True, "user": doc_to_admin(fresh)}
-
-
-@app.delete("/api/admin/me/phone")
-async def admin_remove_phone(admin: dict = Depends(require_admin)) -> dict:
-    await revoke_admin_codes(db, admin["sub"])
-    await db.admins.update_one(
-        {"_id": admin["sub"]},
-        {"$unset": {"phone": "", "phoneCarrier": "", "phoneVerifiedAt": "", "pendingPhone": "", "pendingPhoneCarrier": ""}},
-    )
-    fresh = await db.admins.find_one({"_id": admin["sub"]})
-    return {"ok": True, "user": doc_to_admin(fresh)}
 
 
 # ---- Trusted device management ---- #
@@ -1053,7 +1013,6 @@ async def admin_2fa_disable(payload: TwoFactorVerifyIn, admin: dict = Depends(re
     # Revoke all trusted devices tied to this admin
     await db.admin_trusted_devices.delete_many({"adminId": doc["_id"]})
     await db.admin_email_otps.delete_one({"_id": doc["_id"]})
-    await revoke_admin_codes(db, doc["_id"])
     return {"ok": True}
 
 
@@ -1104,7 +1063,6 @@ async def admin_2fa_reset(admin_id: str, admin: dict = Depends(require_admin)) -
     )
     await db.admin_trusted_devices.delete_many({"adminId": admin_id})
     await db.admin_email_otps.delete_one({"_id": admin_id})
-    await revoke_admin_codes(db, admin_id)
     return {"ok": True}
 
 
@@ -1626,7 +1584,6 @@ def user_to_public(doc: dict) -> dict:
         "id": doc["_id"],
         "fullName": doc.get("fullName", ""),
         "email": doc.get("email", ""),
-        "phone": _mask_phone(doc.get("phone") or "") or None,
         "picture": doc.get("picture", ""),
         "authProvider": doc.get("authProvider", "email"),
         "isBanned": bool(doc.get("isBanned")),
@@ -1702,54 +1659,129 @@ async def auth_login(payload: UserLoginIn) -> dict:
     return {"token": token, "user": user_to_public(doc)}
 
 
-# ---------- Sign in / sign up with phone (Twilio SMS) ---------- #
+# ---------- Stripe checkout (per-product one-time payments) ---------- #
+
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or ""
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
 
-class PhoneSendIn(BaseModel):
-    phone: str
+def _price_to_cents(price: Any) -> int:
+    """Parse an admin-entered price like '$28.00' or '28' into integer cents."""
+    if price is None:
+        return 0
+    cleaned = _pw_re.sub(r"[^0-9.]", "", str(price))
+    if not cleaned:
+        return 0
+    try:
+        return int(round(float(cleaned) * 100))
+    except ValueError:
+        return 0
 
 
-class PhoneVerifyIn(BaseModel):
-    phone: str
-    code: str
-    fullName: Optional[str] = None
+class CheckoutRequest(BaseModel):
+    product_id: str
+    origin_url: str
 
 
-@app.post("/api/auth/phone/send", response_model=PhoneCodeResponse)
-async def auth_phone_send(payload: PhoneSendIn) -> dict:
-    phone = _normalize_phone(payload.phone)
-    return await send_sms_code(db, db.phone_otps, phone, phone, "sign-in")
+@app.post("/api/payments/checkout")
+async def create_checkout(req: CheckoutRequest) -> dict:
+    if not stripe.api_key:
+        raise HTTPException(status_code=503, detail="Payments are not configured yet.")
+    site = await get_site_doc()
+    product = None
+    for it in (site.get("products", {}) or {}).get("items", []) or []:
+        if str(it.get("id")) == str(req.product_id):
+            product = it
+            break
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    amount = _price_to_cents(product.get("price"))
+    if amount < 50:
+        raise HTTPException(status_code=400, detail="This product isn't available for checkout yet.")
+    origin = req.origin_url.rstrip("/")
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": product.get("name") or "Essential Gemstones"},
+                    "unit_amount": amount,
+                },
+                "quantity": 1,
+            }],
+            success_url=f"{origin}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{origin}/payment/cancel",
+            metadata={"product_id": str(req.product_id), "product_name": (product.get("name") or "")[:200]},
+        )
+    except Exception as e:
+        logging.exception("Stripe checkout create failed")
+        raise HTTPException(status_code=502, detail=f"Could not start checkout: {e}")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.payment_transactions.insert_one({
+        "_id": session.id,
+        "session_id": session.id,
+        "product_id": str(req.product_id),
+        "product_name": product.get("name") or "",
+        "amount": amount,
+        "currency": "usd",
+        "status": "initiated",
+        "payment_status": "pending",
+        "created_at": now,
+        "updated_at": now,
+    })
+    return {"checkout_url": session.url, "session_id": session.id}
 
 
-@app.post("/api/auth/phone/verify")
-async def auth_phone_verify(payload: PhoneVerifyIn) -> dict:
-    phone = _normalize_phone(payload.phone)
-    if not await consume_sms_code(db.phone_otps, phone, payload.code, phone):
-        raise HTTPException(status_code=401, detail="Invalid or expired code. Request a new one.")
-    # Preserve accounts created under the old ten-digit carrier-gateway format.
-    aliases = [phone, phone[2:]] if phone.startswith("+1") else [phone]
-    doc = await db.users.find_one({"phone": {"$in": aliases}})
-    if doc:
-        if doc.get("isBanned"):
-            raise HTTPException(status_code=403, detail="Your account has been suspended.")
-        await db.users.update_one({"_id": doc["_id"]}, {"$set": {"phone": phone}, "$unset": {"phoneCarrier": ""}})
-        doc["phone"] = phone
-    else:
-        name = (payload.fullName or "").strip()
-        doc = {
-            "_id": str(uuid.uuid4()),
-            "fullName": name if len(name) >= 2 else f"Member \u2022{phone[-4:]}",
-            "email": "",
-            "phone": phone,
-            "passwordHash": "",
-            "isBanned": False,
-            "favorites": [],
-            "authProvider": "phone",
-            "createdAt": datetime.now(timezone.utc).isoformat(),
-        }
-        await db.users.insert_one(doc)
-    token = make_user_token(doc["_id"], doc.get("email") or "")
-    return {"token": token, "user": user_to_public(doc)}
+@app.get("/api/payments/status/{session_id}")
+async def payment_status(session_id: str) -> dict:
+    record = await db.payment_transactions.find_one({"session_id": session_id})
+    if not record:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if record.get("payment_status") != "paid":
+        try:
+            s = stripe.checkout.Session.retrieve(session_id)
+            if s.payment_status == "paid" or s.status == "complete":
+                await db.payment_transactions.update_one(
+                    {"session_id": session_id, "payment_status": {"$ne": "paid"}},
+                    {"$set": {"status": "completed", "payment_status": "paid",
+                              "updated_at": datetime.now(timezone.utc).isoformat()}},
+                )
+                record = await db.payment_transactions.find_one({"session_id": session_id})
+        except Exception:
+            pass
+    return {
+        "session_id": record["session_id"],
+        "status": record.get("status"),
+        "payment_status": record.get("payment_status"),
+        "product_name": record.get("product_name"),
+        "amount": record.get("amount"),
+    }
+
+
+@app.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request) -> dict:
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    obj = event["data"]["object"]
+    t = event["type"]
+    if t == "checkout.session.completed":
+        await db.payment_transactions.update_one(
+            {"session_id": obj["id"], "payment_status": {"$ne": "paid"}},
+            {"$set": {"status": "completed", "payment_status": obj.get("payment_status", "paid"),
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    elif t == "checkout.session.expired":
+        await db.payment_transactions.update_one(
+            {"session_id": obj["id"]},
+            {"$set": {"status": "expired", "payment_status": "expired",
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    return {"status": "ok"}
 
 
 # ---------- Sign in with Google (Emergent-managed OAuth) ---------- #
@@ -2038,7 +2070,7 @@ async def _startup_seed_admin() -> None:
       (prevents lock-outs after env changes / test drift). Logs a warning when it self-heals.
     - 2FA is NEVER re-enabled or wiped by this hook — that's a manual admin action.
     """
-    for collection in (db.phone_otps, db.admin_sms_otps, db.admin_phone_verify, db.sms_send_limits, db.password_attempts):
+    for collection in (db.password_attempts,):
         await collection.create_index("expires_at", expireAfterSeconds=0)
     try:
         existing_master = await db.admins.find_one({"username": "master"})
@@ -2871,7 +2903,6 @@ async def _apply_admin_action(action_obj: dict, caller: dict) -> dict:
         await db.admins.delete_one({"_id": target["_id"]})
         await db.admin_trusted_devices.delete_many({"adminId": target["_id"]})
         await db.admin_email_otps.delete_one({"_id": target["_id"]})
-        await revoke_admin_codes(db, target["_id"])
         return {"ok": True, "action": "delete", "summary": f"Deleted admin '{target.get('username')}'."}
 
     if action == "resetpassword":
@@ -2897,7 +2928,6 @@ async def _apply_admin_action(action_obj: dict, caller: dict) -> dict:
         )
         await db.admin_trusted_devices.delete_many({"adminId": target["_id"]})
         await db.admin_email_otps.delete_one({"_id": target["_id"]})
-        await revoke_admin_codes(db, target["_id"])
         return {"ok": True, "action": "reset2fa", "summary": f"Reset 2FA for '{target.get('username')}'. They\u2019ll enroll again on their next login."}
 
     return {"ok": False, "error": f"unhandled action '{action}'"}

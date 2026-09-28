@@ -13,6 +13,7 @@ import Craft from '../components/Craft';
 import FAQ from '../components/FAQ';
 import Gallery from '../components/Gallery';
 import VIP from '../components/VIP';
+import NanoAI from '../components/NanoAI';
 import Footer from '../components/Footer';
 import ChatBubble from '../components/chat/ChatBubble';
 
@@ -29,11 +30,14 @@ const REGISTRY = {
   faq: FAQ,
   gallery: Gallery,
   vip: VIP,
+  nanoAI: NanoAI,
 };
 
 export default function Home() {
   const { site } = useSite();
-  const order = site.sectionOrder || Object.keys(REGISTRY);
+  const baseOrder = site.sectionOrder || Object.keys(REGISTRY);
+  // Append any registered sections missing from a saved order (e.g. newly added nanoAI)
+  const order = [...baseOrder, ...Object.keys(REGISTRY).filter((k) => !baseOrder.includes(k))];
   const vis = site.sectionVisibility || {};
   return (
     <div className="min-h-screen bg-[#faf6f0]">

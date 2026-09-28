@@ -10,7 +10,6 @@ import AdminsManager from '../components/admin/AdminsManager';
 import SubscribersManager from '../components/admin/SubscribersManager';
 import UsersManager from '../components/admin/UsersManager';
 import AIWriter from '../components/admin/AIWriter';
-import AdminPhoneSetup from '../components/admin/AdminPhoneSetup';
 import { Switch } from '../components/ui/switch';
 
 const SECTION_LABELS = {
@@ -26,6 +25,7 @@ const SECTION_LABELS = {
   faq: 'FAQ',
   gallery: 'Gallery',
   vip: 'VIP Membership',
+  nanoAI: 'Meet Nano AI',
 };
 
 export default function AdminDashboard() {
@@ -213,10 +213,6 @@ export default function AdminDashboard() {
           </SectionCard>
         )}
 
-        <SectionCard testId="admin-phone-section" title="My Sign-in Phone (Text me a code)" open={openSections.phone} onToggle={() => toggle('phone')}>
-          <AdminPhoneSetup me={me} onChange={(u) => { setMe(u); localStorage.setItem('eg_admin_user', JSON.stringify(u)); }} />
-        </SectionCard>
-
         {/* Subscribers */}
         {can('manage_subscribers') && (
           <SectionCard title="Newsletter Subscribers" open={openSections.subscribers} onToggle={() => toggle('subscribers')}>
@@ -311,7 +307,10 @@ export default function AdminDashboard() {
                   </div>
                   <TextArea value={item.description} placeholder="Description" rows={2} onChange={(v) => { const arr=[...data.products.items]; arr[i]={...arr[i],description:v}; update(['products','items'],arr); }} />
                   <div className="grid sm:grid-cols-2 gap-3">
-                    <TextInput value={item.buyUrl} placeholder="Buy link (Stripe)" onChange={(v) => { const arr=[...data.products.items]; arr[i]={...arr[i],buyUrl:v}; update(['products','items'],arr); }} />
+                    <div>
+                      <TextInput value={item.buyUrl} placeholder="https://buy.stripe.com/... (optional)" onChange={(v) => { const arr=[...data.products.items]; arr[i]={...arr[i],buyUrl:v}; update(['products','items'],arr); }} />
+                      <p className="text-[11px] text-[#8b6b4f] mt-1">Optional Stripe payment link. Leave blank to use the built-in Stripe checkout (uses the price above).</p>
+                    </div>
                     <TextInput value={item.badge} placeholder="Badge (e.g. New)" onChange={(v) => { const arr=[...data.products.items]; arr[i]={...arr[i],badge:v}; update(['products','items'],arr); }} />
                   </div>
                   <MediaPicker value={item.image} onChange={(url) => { const arr=[...data.products.items]; arr[i]={...arr[i],image:url}; update(['products','items'],arr); }} label="Image" accept="image/*" />
@@ -606,6 +605,36 @@ export default function AdminDashboard() {
             <Field label="Title"><TextInput value={data.vip.lockedTitle} onChange={(v) => update(['vip','lockedTitle'], v)} placeholder="Exclusive member perks" /></Field>
             <Field label="Body"><TextArea value={data.vip.lockedText} onChange={(v) => update(['vip','lockedText'], v)} rows={3} /></Field>
           </div>
+        </SectionCard>
+        )}
+
+        {/* Nano AI */}
+        {can('nanoAI') && (
+        <SectionCard title="Meet Nano AI" open={openSections.nanoAI} onToggle={() => toggle('nanoAI')}>
+          <Field label="Kicker"><TextInput value={data.nanoAI?.kicker} onChange={(v) => update(['nanoAI','kicker'], v)} /></Field>
+          <Field label="Title"><TextInput value={data.nanoAI?.title} onChange={(v) => update(['nanoAI','title'], v)} /></Field>
+          <Field label="Subtitle / description"><TextArea value={data.nanoAI?.subtitle} onChange={(v) => update(['nanoAI','subtitle'], v)} rows={4} /></Field>
+          <div className="grid sm:grid-cols-2 gap-4">
+            <Field label="Button label"><TextInput value={data.nanoAI?.ctaLabel} onChange={(v) => update(['nanoAI','ctaLabel'], v)} placeholder="Try Nano AI" /></Field>
+            <Field label="Button link"><TextInput value={data.nanoAI?.ctaUrl} onChange={(v) => update(['nanoAI','ctaUrl'], v)} placeholder="https://nano-ai.org" /></Field>
+          </div>
+          <Field label="Small note (next to button)"><TextInput value={data.nanoAI?.note} onChange={(v) => update(['nanoAI','note'], v)} placeholder="Another creation by Luca" /></Field>
+          <MediaPicker value={data.nanoAI?.image} onChange={(url) => update(['nanoAI','image'], url)} label="Section image" accept="image/*" />
+          <Field label="Feature highlights">
+            <ListReorder
+              items={data.nanoAI?.features || []}
+              onMove={(idx, d) => { const arr=[...(data.nanoAI?.features||[])]; const j=idx+d; if(j<0||j>=arr.length) return; [arr[idx],arr[j]]=[arr[j],arr[idx]]; update(['nanoAI','features'], arr); }}
+              onRemove={(idx) => update(['nanoAI','features'], (data.nanoAI?.features||[]).filter((_,x) => x !== idx))}
+              onAdd={() => update(['nanoAI','features'], [...(data.nanoAI?.features||[]), { title: 'New feature', desc: '' }])}
+              addLabel="Add feature"
+              renderItem={(f, idx) => (
+                <div className="space-y-2">
+                  <TextInput value={f.title} placeholder="Feature title" onChange={(v) => { const a=[...(data.nanoAI?.features||[])]; a[idx]={...a[idx],title:v}; update(['nanoAI','features'],a); }} />
+                  <TextArea value={f.desc} placeholder="Short description" rows={2} onChange={(v) => { const a=[...(data.nanoAI?.features||[])]; a[idx]={...a[idx],desc:v}; update(['nanoAI','features'],a); }} />
+                </div>
+              )}
+            />
+          </Field>
         </SectionCard>
         )}
 

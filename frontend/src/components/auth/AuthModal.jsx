@@ -1,13 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { X, Loader2, Gem, MessageSquare, Mail } from 'lucide-react';
+import { X, Loader2, Gem } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../hooks/use-toast';
-import PhoneAuthForm from './PhoneAuthForm';
 
 export default function AuthModal() {
   const { authModalOpen, closeAuthModal, authModalMode, register, login, beginGoogleSignIn } = useAuth();
   const [mode, setMode] = useState(authModalMode);
-  const [method, setMethod] = useState('email');
   const [form, setForm] = useState({ fullName: '', email: '', password: '' });
   const [submitting, setSubmitting] = useState(false);
   const { toast } = useToast();
@@ -65,23 +63,11 @@ export default function AuthModal() {
             <GoogleGlyph />
             Continue with Google
           </button>
-          <button
-            type="button"
-            onClick={() => setMethod(method === 'phone' ? 'email' : 'phone')}
-            data-testid="auth-phone-toggle-btn"
-            className="w-full py-3 border border-[#e8dfd1] bg-white rounded-full text-sm text-[#1a1410] hover:bg-[#faf6f0] transition-colors inline-flex items-center justify-center gap-3"
-          >
-            {method === 'phone' ? <Mail className="w-4 h-4 text-[#6b4f3a]" /> : <MessageSquare className="w-4 h-4 text-[#6b4f3a]" />}
-            {method === 'phone' ? 'Continue with email' : 'Continue with phone (text code)'}
-          </button>
           <div className="flex items-center gap-3 my-1">
             <div className="flex-1 h-px bg-[#e8dfd1]" />
             <span className="text-[10px] tracking-[0.2em] uppercase text-[#8b6b4f]">or</span>
             <div className="flex-1 h-px bg-[#e8dfd1]" />
           </div>
-          {method === 'phone' ? (
-            <PhoneAuthForm key={mode} mode={mode} onDone={closeAuthModal} />
-          ) : (
           <form onSubmit={onSubmit} data-testid="auth-email-form" className="space-y-4">
           {mode === 'register' && (
             <div>
@@ -102,7 +88,6 @@ export default function AuthModal() {
             {submitting ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Sign in'}
           </button>
           </form>
-          )}
           <p className="text-center text-sm text-[#5a4a3d] pt-1">
             {mode === 'register' ? (
               <>Already have an account? <button type="button" data-testid="auth-switch-to-login" onClick={() => setMode('login')} className="text-[#6b4f3a] underline underline-offset-4">Sign in</button></>

@@ -50,9 +50,24 @@ const defaultSite = {
   faq: { kicker: 'FAQ', title: 'Frequently Asked Questions', subtitle: '', items: mock.faqs },
   gallery: { kicker: 'Gallery', title: 'A Closer Look at Our Craft', images: mock.galleryImages },
   vip: { kicker: 'Exclusive Access', title: 'Join our VIP Membership', subtitle: '', perks: [], ctaLabel: 'Join the VIP Club', ctaUrl: '#' },
+  nanoAI: {
+    kicker: 'A Little Something Extra',
+    title: 'Meet Nano AI',
+    subtitle: "You can also try out this business I've created called Nano AI — a personal AI chat companion that remembers helpful details, organizes your conversations, and gives you smart tools all in one simple place.",
+    image: 'https://static.prod-images.emergentagent.com/jobs/2fde6317-a09a-43de-a20a-f1efe8d5d18d/images/a1df6793579e597138f81758ad1d4bf332dddc3df2909d9e59fdde83c7fffe1e.jpeg',
+    features: [
+      { title: 'Personalized memory', desc: 'Nano remembers your preferences and context across every conversation.' },
+      { title: '17 AI models', desc: 'Switch between models from OpenAI, Anthropic, and Google — all in one place.' },
+      { title: 'Create anything', desc: 'Generate documents, images, and even short videos from a simple message.' },
+      { title: 'Free to start', desc: 'Start chatting in seconds — no credit card required for the Free plan.' },
+    ],
+    ctaLabel: 'Try Nano AI',
+    ctaUrl: 'https://nano-ai.org',
+    note: 'Another creation by Luca',
+  },
   footer: { brand: 'Essential Gemstones', tagline: '', newsletterKicker: 'Stay Connected', newsletterTitle: 'Get the latest from the studio.', email: '', donateTitle: 'Support', donateText: '', donateUrl: '#', donateLabel: 'Donate Now', copyright: 'Handmade with intention.', quote: '', socials: { instagram: '#', facebook: '#' } },
-  sectionOrder: ['hero', 'products', 'story', 'promise', 'chakra', 'stats', 'lavaMeaning', 'founder', 'craft', 'faq', 'gallery', 'vip'],
-  sectionVisibility: { hero: true, products: true, story: true, promise: true, chakra: true, stats: true, lavaMeaning: true, founder: true, craft: true, faq: true, gallery: true, vip: true }
+  sectionOrder: ['hero', 'products', 'story', 'promise', 'chakra', 'stats', 'lavaMeaning', 'founder', 'craft', 'faq', 'gallery', 'vip', 'nanoAI'],
+  sectionVisibility: { hero: true, products: true, story: true, promise: true, chakra: true, stats: true, lavaMeaning: true, founder: true, craft: true, faq: true, gallery: true, vip: true, nanoAI: true }
 };
 
 const SiteContext = createContext({ site: defaultSite, loading: true, refresh: () => {}, setSite: () => {} });

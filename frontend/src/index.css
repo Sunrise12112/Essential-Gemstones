@@ -11,6 +11,17 @@ body {
   -moz-osx-font-smoothing: grayscale;
   background: #faf6f0;
   color: #2c2420;
+  overflow-x: hidden;
+}
+
+html {
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+
+/* Comfortable tap targets on touch devices */
+@media (max-width: 640px) {
+  button, a { -webkit-tap-highlight-color: transparent; }
 }
 
 .font-serif { font-family: 'Playfair Display', Georgia, serif; }
