@@ -1,0 +1,30 @@
+{
+  "summary": "Full backend + frontend regression for: SMS/Twilio removal, integrated Stripe checkout, Nano AI CMS, TOTP-only admin 2FA, and mobile pass. 8/8 backend pytest tests pass. Frontend: Nano AI section renders, auth modal has no phone toggle, admin login via TOTP works (no SMS chooser), admin dashboard shows Meet Nano AI editor and no phone section. Buy Now on both products opens external buy.stripe.com payment link (buyUrl override) — as designed; integrated /api/payments/checkout endpoint verified server-side (creates checkout.stripe.com session, chakra $28.00 -> 2800 cents). Mobile viewport 390x844: no horizontal overflow.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_stripe_nanoai_no_sms.py",
+    "/app/test_reports/pytest/stripe_nanoai.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is >3300 lines — worth splitting into routers (auth/admin/payments/site/uploads/chat) for maintainability.",
+    "Products default seed has buyUrl set for both products, which shadows the new integrated /api/payments/checkout code path in the live site. If the intent is to prefer the integrated flow, consider clearing buyUrl in default_site or in the seed so testers/users hit the /api/payments/checkout path unless an admin explicitly opts into an external link.",
+    "startProductCheckout uses window.location.href=data.checkout_url — fine, but any transient network error currently only surfaces via toast; consider disabling the button until redirect commits to avoid double-clicks.",
+    "SignupPrompt uses fixed 10s timer with pointer-events overlay; on mobile it can briefly block interactions right when a user is trying to tap Buy Now (auto-appears after 10s idle). Consider not showing while user is scrolling / has interacted with Buy button."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_stripe_nanoai_no_sms.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "master / 1121211221 + TOTP secret IVQKJZDYWPOQ4ZAXNKMNU22TQ5N5DL7U (documented in /app/memory/test_credentials.md).",
+  "seed_data_creation": "None. Admin edit test on nanoAI.title is self-restoring (writes then restores original title).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression file: /app/backend/tests/test_stripe_nanoai_no_sms.py. Note: /api/admin/2fa/login requires the twoFactorToken to be passed BOTH in JSON body AND as Authorization: Bearer header (require_challenge_2fa dep reads the header). Products default seed has buyUrl set on both items so the site Buy Now buttons open buy.stripe.com in a new tab via window.open — this exercises the buyUrl override branch, not the integrated /api/payments/checkout call. The integrated endpoint itself is exercised directly by the pytest suite. SignupPrompt auto-appears 10s after load; pre-seed localStorage.eg_signup_prompt_dismissed=1 via add_init_script to keep it out of the way during Playwright runs.",
+  "rca of the issue": "N/A — no regressions found."
+}

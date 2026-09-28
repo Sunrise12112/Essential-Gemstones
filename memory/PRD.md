@@ -183,3 +183,17 @@ Required backend config: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and exactly 
 - **P1 — Account recovery UI:** regenerate backup codes; trusted-device list/revoke controls (backend exists).
 - **P2:** attach guest waitlists by email on sign-in; media library; evaluate httpOnly session storage as a separate architectural change, not an SMS regression.
 - **Future enhancement:** opt-in waitlist text alerts using the same verified number after real SMS delivery is active.
+
+## 2026-06 — Stripe checkout + Nano AI section + SMS removal + mobile pass
+User pivot: "Remove all the SMS stuff, add Stripe integration for all products." Plus: add an editable "Nano AI" homepage section (content pulled from https://nano-ai.org), and optimize for mobile.
+
+### Delivered
+1. **SMS/Twilio fully removed.** Deleted `sms_service.py`, `sms_otp.py`, `PhoneAuthForm.jsx`, `AdminPhoneSetup.jsx`. Stripped all phone/SMS code from `server.py` (member phone login, admin SMS 2FA, phone verify endpoints, phone fields in `doc_to_admin`/`user_to_public`, SMS TTL indexes), `AuthModal.jsx`, `AuthContext.jsx`, `AdminLogin.jsx` (SMS step/method), `AdminDashboard.jsx` (phone section). Admin 2FA now TOTP + Email OTP + backup codes only. `/api/auth/phone/*` and `/api/admin/2fa/sms/send`, `/api/admin/me/phone` return 404.
+2. **Integrated per-product Stripe Checkout** (raw `stripe` SDK, existing sandbox keys in backend/.env). New endpoints: `POST /api/payments/checkout` {product_id, origin_url} → creates a Checkout Session from the admin-set DB price (inline `price_data`, `_price_to_cents` parses "$28.00"→2800), inserts `payment_transactions`, returns checkout_url; `GET /api/payments/status/{session_id}` (with Stripe fallback poll); `POST /api/stripe/webhook`. Frontend `startProductCheckout` (lib/api.js): Buy Now on Products.jsx + ProductModal.jsx. **Per-product `buyUrl` acts as an OPTIONAL external Stripe-link override** — if set, opens that link; else built-in checkout. The 2 seeded products keep their existing buy.stripe.com links. New pages `/payment/success` (polls status) + `/payment/cancel`. Tax mode: DIY (Stripe just processes; no tax) — can switch to Stripe-calculates or Stripe-manages-all later.
+3. **Nano AI section** — new `nanoAI` in default_site + SiteContext + SECTION_PERMS + sectionOrder/visibility. `NanoAI.jsx` (dark earthy section) registered in Home. Fully editable in AdminDashboard ("Meet Nano AI" card: kicker/title/subtitle/button/note/image/features). `get_site_doc` now reconciles sectionOrder/visibility so newly-added sections always appear even on older saved docs. Home.jsx appends any registered section missing from a saved order.
+4. **Mobile pass** — global `overflow-x:hidden`, responsive Hero (H1 text-4xl→7xl, padding, quote card repositioned), verified single-column product grid, hamburger nav, chat widget all fine at 390px. No horizontal overflow.
+5. **Setup guide** for the user at `/app/STRIPE_SETUP.md` (super simple, plain-English Stripe instructions incl. test card 4242…).
+
+### Verification
+- iteration_10.json: 8/8 backend pytest pass, frontend 100%. Regression tests: `/app/backend/tests/test_stripe_nanoai_no_sms.py`. Checkout verified (chakra $28→2800, 404 on bad product, SMS endpoints 404, TOTP 2FA works, nanoAI CRUD+render, mobile no overflow).
+- STRIPE MODE = test sandbox (already provisioned, keys in backend/.env). User must claim the sandbox + complete KYC to go live.
