@@ -1,6 +1,7 @@
 # Essential Gemstones — PRD
 
 > **2026-06 update**: Added clickable "Built by Nano AI" credit (links to nano-ai.org) to all AI surfaces — customer chat widget (`ChatBubble.jsx`), and the Admin AI panel/site editor (`AIWriter.jsx`).
+> **2026-06 update (chat spacing fix)**: Member chat was rendering words with no spaces between them. Root cause: the SSE parser in `ChatBubble.jsx` did `.trim()` on every `data:` line, stripping the word-separating leading space. Fixed to strip only a single leading space (`replace(/^ /, '')`) per the SSE spec. Verified live via member chat.
 > **2026-06 update (revert)**: Per user, the AI provider was reverted from Nano AI back to **Claude (`claude-sonnet-4-5` via Emergent LLM / emergentintegrations)** for all three AI features (customer chat, admin AI, AI site editor). The "Built by Nano AI" branding labels and the homepage "Meet Nano AI" section are KEPT for display, but the actual chat/edit generation now runs on Claude again. All Nano REST (`_nano_generate`, `NANO_API_*`) code removed from `server.py`. Added "Regenerate Backup Codes" button in Admin → Manage Admins (own row, 2FA-gated).
 
 

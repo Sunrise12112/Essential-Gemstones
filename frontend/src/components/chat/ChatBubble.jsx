@@ -113,7 +113,7 @@ export default function ChatBubble() {
           const dataLines = [];
           for (const line of raw.split('\n')) {
             if (line.startsWith('event:')) eventName = line.slice(6).trim();
-            else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+            else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
           }
           const data = dataLines.join('\n').replace(/\\n/g, '\n');
           if (eventName === 'session') setCurrentSessionId(data);
