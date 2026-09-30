@@ -25,6 +25,11 @@ api.interceptors.request.use((cfg) => {
 // Stripe payment link (buyUrl) we use that; otherwise we create a built-in
 // Stripe Checkout session from the product's price and redirect to it.
 export async function startProductCheckout(product) {
+  if (product?.priceId) {
+    const { data } = await api.post('/payments/checkout', { price_id: product.priceId, origin_url: window.location.origin });
+    if (data?.checkout_url) window.location.href = data.checkout_url;
+    return data;
+  }
   if (product?.buyUrl) {
     window.open(product.buyUrl, '_blank', 'noopener');
     return { external: true };

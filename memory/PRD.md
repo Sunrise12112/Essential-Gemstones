@@ -197,3 +197,18 @@ User pivot: "Remove all the SMS stuff, add Stripe integration for all products."
 ### Verification
 - iteration_10.json: 8/8 backend pytest pass, frontend 100%. Regression tests: `/app/backend/tests/test_stripe_nanoai_no_sms.py`. Checkout verified (chakra $28→2800, 404 on bad product, SMS endpoints 404, TOTP 2FA works, nanoAI CRUD+render, mobile no overflow).
 - STRIPE MODE = test sandbox (already provisioned, keys in backend/.env). User must claim the sandbox + complete KYC to go live.
+
+## 2026-06 (2) — Stripe switched to BYOK + full admin Stripe management
+Context: the Emergent claimable sandbox was UNLINKED by the user. Dead sandbox secrets removed from backend/.env (STRIPE_SECRET_KEY/PUBLISHABLE/ACCOUNT_ID/WEBHOOK_SECRET/MODE). Stripe now uses **BYOK** via runtime env `STRIPE_API_KEY` (platform injects `sk_test_emergent` placeholder; user adds their real `sk_test_`/`sk_live_` key via Emergent Payments/Secrets panel). Backend treats `""`/`sk_test_emergent` as "not connected".
+
+### Delivered (admin panel = source of truth, pushes to Stripe)
+- New admin page **/admin/stripe** (`StripeProducts.jsx`, linked from dashboard header "Stripe Store"): tabs Products / Orders / Discounts. Shows a "Connect your Stripe account" screen until a real key is set.
+- Backend (raw `stripe` SDK, keyed by STRIPE_API_KEY, all `require_admin`): `GET/POST/PUT/DELETE /api/admin/stripe/products` (create Product+Price, price change makes a new default price, delete→archive fallback, images, active toggle); `GET /api/admin/stripe/payments` (orders) + `POST /api/admin/stripe/refund`; `GET/POST/DELETE /api/admin/stripe/coupons` (Coupon+PromotionCode). Public `GET /api/stripe/catalog` (active products) drives the storefront when Stripe is connected (falls back to CMS products otherwise). `POST /api/payments/checkout` now takes `price_id` (Stripe catalog) or `product_id` (CMS fallback) and enables `allow_promotion_codes`. Webhook moved to `/api/webhook/stripe` (BYOK convention), signature optional.
+- Storefront `Products.jsx` loads `/stripe/catalog` and renders Stripe products (Buy Now → checkout by price_id) when connected.
+
+### Verified
+- Admin TOTP login works; `/admin/stripe/status` → `{configured:false}`; product endpoints → 503 "not connected" (graceful); frontend compiles; checkout CMS-fallback path works.
+- **NOT E2E-verifiable here:** product/refund/coupon CRUD needs the user's real Stripe key (the shared `sk_test_emergent` placeholder can't hit api.stripe.com via the raw SDK). Once STRIPE_API_KEY is a real key, the admin page activates fully.
+
+### Deployment note (2026-06)
+- Production deploy failed: the deployed **CORS_ORIGINS secret** is `*`/placeholder, rejected by the server guard (server.py ~2302). FIX (user): Deployment Panel → Secrets → set `CORS_ORIGINS` to an explicit list (e.g. `https://gemstone-makeover.emergent.host,https://essentialgemstones.com,https://www.essentialgemstones.com`), then redeploy. Previous healthy deploy stays live. Guard is intentional — do NOT allow `*` with credentials.

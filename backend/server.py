@@ -45,6 +45,7 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 
 import io as _io
+import json
 import base64 as _base64
 import requests as _requests
 import re as _pw_re
@@ -1659,76 +1660,97 @@ async def auth_login(payload: UserLoginIn) -> dict:
     return {"token": token, "user": user_to_public(doc)}
 
 
-# ---------- Stripe checkout (per-product one-time payments) ---------- #
+# ---------- Stripe (BYOK) — checkout + full catalog / orders / refunds / discounts ---------- #
 
-stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or ""
+stripe.api_key = os.environ.get("STRIPE_API_KEY") or ""
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+_STRIPE_PLACEHOLDER_KEYS = {"", "sk_test_emergent"}
 
 
-def _price_to_cents(price: Any) -> int:
-    """Parse an admin-entered price like '$28.00' or '28' into integer cents."""
-    if price is None:
-        return 0
-    cleaned = _pw_re.sub(r"[^0-9.]", "", str(price))
-    if not cleaned:
-        return 0
+def _stripe_ready() -> bool:
+    return bool(stripe.api_key) and stripe.api_key not in _STRIPE_PLACEHOLDER_KEYS
+
+
+def _require_stripe() -> None:
+    if not _stripe_ready():
+        raise HTTPException(status_code=503, detail="Stripe isn't connected yet. Add your Stripe secret key to enable payments.")
+
+
+def _dollars_to_cents(value: Any) -> int:
     try:
-        return int(round(float(cleaned) * 100))
-    except ValueError:
+        return int(round(float(str(value).replace("$", "").replace(",", "").strip()) * 100))
+    except (ValueError, TypeError):
         return 0
+
+
+def _fmt_stripe_product(p: Any) -> dict:
+    p = dict(p)
+    dp = p.get("default_price")
+    price = None
+    if isinstance(dp, dict):
+        price = {"id": dp.get("id"), "unit_amount": dp.get("unit_amount"), "currency": dp.get("currency")}
+    elif isinstance(dp, str):
+        price = {"id": dp}
+    return {
+        "id": p.get("id"),
+        "name": p.get("name"),
+        "description": p.get("description") or "",
+        "images": list(p.get("images") or []),
+        "active": bool(p.get("active")),
+        "price": price,
+    }
 
 
 class CheckoutRequest(BaseModel):
-    product_id: str
+    product_id: Optional[str] = None
+    price_id: Optional[str] = None
     origin_url: str
 
 
 @app.post("/api/payments/checkout")
 async def create_checkout(req: CheckoutRequest) -> dict:
-    if not stripe.api_key:
-        raise HTTPException(status_code=503, detail="Payments are not configured yet.")
-    site = await get_site_doc()
-    product = None
-    for it in (site.get("products", {}) or {}).get("items", []) or []:
-        if str(it.get("id")) == str(req.product_id):
-            product = it
-            break
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    amount = _price_to_cents(product.get("price"))
-    if amount < 50:
-        raise HTTPException(status_code=400, detail="This product isn't available for checkout yet.")
+    _require_stripe()
     origin = req.origin_url.rstrip("/")
+    product_name = ""
+    amount = 0
+    if req.price_id:
+        try:
+            price = stripe.Price.retrieve(req.price_id, expand=["product"])
+        except Exception:
+            raise HTTPException(status_code=404, detail="Price not found")
+        line_items = [{"price": req.price_id, "quantity": 1}]
+        amount = price.get("unit_amount") or 0
+        prod = price.get("product")
+        product_name = prod.get("name") if isinstance(prod, dict) else ""
+    else:
+        site = await get_site_doc()
+        product = next((it for it in (site.get("products", {}) or {}).get("items", []) or [] if str(it.get("id")) == str(req.product_id)), None)
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+        amount = _dollars_to_cents(product.get("price"))
+        if amount < 50:
+            raise HTTPException(status_code=400, detail="This product isn't available for checkout yet.")
+        product_name = product.get("name") or "Essential Gemstones"
+        line_items = [{"price_data": {"currency": "usd", "product_data": {"name": product_name}, "unit_amount": amount}, "quantity": 1}]
     try:
         session = stripe.checkout.Session.create(
             mode="payment",
-            line_items=[{
-                "price_data": {
-                    "currency": "usd",
-                    "product_data": {"name": product.get("name") or "Essential Gemstones"},
-                    "unit_amount": amount,
-                },
-                "quantity": 1,
-            }],
+            line_items=line_items,
+            allow_promotion_codes=True,
             success_url=f"{origin}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{origin}/payment/cancel",
-            metadata={"product_id": str(req.product_id), "product_name": (product.get("name") or "")[:200]},
+            metadata={"product_id": str(req.product_id or ""), "price_id": str(req.price_id or "")},
         )
     except Exception as e:
         logging.exception("Stripe checkout create failed")
         raise HTTPException(status_code=502, detail=f"Could not start checkout: {e}")
     now = datetime.now(timezone.utc).isoformat()
     await db.payment_transactions.insert_one({
-        "_id": session.id,
-        "session_id": session.id,
-        "product_id": str(req.product_id),
-        "product_name": product.get("name") or "",
-        "amount": amount,
-        "currency": "usd",
-        "status": "initiated",
-        "payment_status": "pending",
-        "created_at": now,
-        "updated_at": now,
+        "_id": session.id, "session_id": session.id,
+        "product_id": str(req.product_id or ""), "price_id": str(req.price_id or ""),
+        "product_name": product_name, "amount": amount, "currency": "usd",
+        "status": "initiated", "payment_status": "pending",
+        "created_at": now, "updated_at": now,
     })
     return {"checkout_url": session.url, "session_id": session.id}
 
@@ -1738,50 +1760,286 @@ async def payment_status(session_id: str) -> dict:
     record = await db.payment_transactions.find_one({"session_id": session_id})
     if not record:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    if record.get("payment_status") != "paid":
+    if record.get("payment_status") != "paid" and _stripe_ready():
         try:
             s = stripe.checkout.Session.retrieve(session_id)
             if s.payment_status == "paid" or s.status == "complete":
                 await db.payment_transactions.update_one(
                     {"session_id": session_id, "payment_status": {"$ne": "paid"}},
-                    {"$set": {"status": "completed", "payment_status": "paid",
-                              "updated_at": datetime.now(timezone.utc).isoformat()}},
+                    {"$set": {"status": "completed", "payment_status": "paid", "updated_at": datetime.now(timezone.utc).isoformat()}},
                 )
                 record = await db.payment_transactions.find_one({"session_id": session_id})
         except Exception:
             pass
     return {
-        "session_id": record["session_id"],
-        "status": record.get("status"),
+        "session_id": record["session_id"], "status": record.get("status"),
         "payment_status": record.get("payment_status"),
-        "product_name": record.get("product_name"),
-        "amount": record.get("amount"),
+        "product_name": record.get("product_name"), "amount": record.get("amount"),
     }
 
 
-@app.post("/api/stripe/webhook")
+@app.get("/api/stripe/catalog")
+async def stripe_catalog() -> dict:
+    """Public: active Stripe products with a price, for the storefront."""
+    if not _stripe_ready():
+        return {"configured": False, "products": []}
+    try:
+        res = stripe.Product.list(active=True, limit=100, expand=["data.default_price"])
+    except Exception:
+        return {"configured": True, "products": []}
+    items = [_fmt_stripe_product(p) for p in res.get("data", []) if p.get("default_price")]
+    return {"configured": True, "products": items}
+
+
+@app.post("/api/webhook/stripe")
 async def stripe_webhook(request: Request) -> dict:
     payload = await request.body()
     sig = request.headers.get("stripe-signature", "")
-    try:
-        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid signature")
+    if STRIPE_WEBHOOK_SECRET:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid signature")
+    else:
+        try:
+            event = json.loads(payload.decode())
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid payload")
     obj = event["data"]["object"]
     t = event["type"]
     if t == "checkout.session.completed":
         await db.payment_transactions.update_one(
             {"session_id": obj["id"], "payment_status": {"$ne": "paid"}},
-            {"$set": {"status": "completed", "payment_status": obj.get("payment_status", "paid"),
-                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+            {"$set": {"status": "completed", "payment_status": obj.get("payment_status", "paid"), "updated_at": datetime.now(timezone.utc).isoformat()}},
         )
     elif t == "checkout.session.expired":
         await db.payment_transactions.update_one(
             {"session_id": obj["id"]},
-            {"$set": {"status": "expired", "payment_status": "expired",
-                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+            {"$set": {"status": "expired", "payment_status": "expired", "updated_at": datetime.now(timezone.utc).isoformat()}},
         )
     return {"status": "ok"}
+
+
+# ---- Admin Stripe management (products / orders / refunds / discounts) ---- #
+
+
+@app.get("/api/admin/stripe/status")
+async def admin_stripe_status(admin: dict = Depends(require_admin)) -> dict:
+    if not _stripe_ready():
+        return {"configured": False}
+    try:
+        acct = stripe.Account.retrieve()
+        return {
+            "configured": True,
+            "mode": "live" if stripe.api_key.startswith("sk_live") else "test",
+            "account_id": acct.get("id"),
+            "business": (acct.get("business_profile") or {}).get("name"),
+            "email": acct.get("email"),
+        }
+    except Exception as e:
+        return {"configured": False, "error": str(e)}
+
+
+@app.get("/api/admin/stripe/products")
+async def admin_stripe_products(admin: dict = Depends(require_admin)) -> dict:
+    _require_stripe()
+    try:
+        res = stripe.Product.list(limit=100, expand=["data.default_price"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"products": [_fmt_stripe_product(p) for p in res.get("data", [])]}
+
+
+class StripeProductIn(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    price: float
+    currency: str = "usd"
+    images: Optional[list] = None
+    active: bool = True
+
+
+@app.post("/api/admin/stripe/products")
+async def admin_stripe_create_product(payload: StripeProductIn, admin: dict = Depends(require_admin)) -> dict:
+    _require_stripe()
+    cents = _dollars_to_cents(payload.price)
+    if cents < 50:
+        raise HTTPException(status_code=400, detail="Price must be at least $0.50")
+    try:
+        product = stripe.Product.create(
+            name=payload.name.strip(),
+            description=((payload.description or "").strip() or None),
+            images=[i for i in (payload.images or []) if i][:8],
+            active=payload.active,
+            metadata={"managed_by": "essential-gemstones-admin"},
+        )
+        price = stripe.Price.create(product=product.id, unit_amount=cents, currency=(payload.currency or "usd").lower())
+        stripe.Product.modify(product.id, default_price=price.id)
+        product = stripe.Product.retrieve(product.id, expand=["default_price"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"product": _fmt_stripe_product(product)}
+
+
+class StripeProductUpdateIn(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[float] = None
+    currency: Optional[str] = "usd"
+    images: Optional[list] = None
+    active: Optional[bool] = None
+
+
+@app.put("/api/admin/stripe/products/{product_id}")
+async def admin_stripe_update_product(product_id: str, payload: StripeProductUpdateIn, admin: dict = Depends(require_admin)) -> dict:
+    _require_stripe()
+    mods: dict = {}
+    if payload.name is not None:
+        mods["name"] = payload.name.strip()
+    if payload.description is not None:
+        mods["description"] = payload.description.strip() or None
+    if payload.images is not None:
+        mods["images"] = [i for i in payload.images if i][:8]
+    if payload.active is not None:
+        mods["active"] = payload.active
+    try:
+        if payload.price is not None:
+            cents = _dollars_to_cents(payload.price)
+            if cents < 50:
+                raise HTTPException(status_code=400, detail="Price must be at least $0.50")
+            new_price = stripe.Price.create(product=product_id, unit_amount=cents, currency=(payload.currency or "usd").lower())
+            mods["default_price"] = new_price.id
+        if mods:
+            stripe.Product.modify(product_id, **mods)
+        product = stripe.Product.retrieve(product_id, expand=["default_price"])
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"product": _fmt_stripe_product(product)}
+
+
+@app.delete("/api/admin/stripe/products/{product_id}")
+async def admin_stripe_delete_product(product_id: str, admin: dict = Depends(require_admin)) -> dict:
+    _require_stripe()
+    try:
+        try:
+            stripe.Product.delete(product_id)
+            return {"deleted": True}
+        except Exception:
+            stripe.Product.modify(product_id, active=False)
+            return {"deleted": False, "archived": True}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/admin/stripe/payments")
+async def admin_stripe_payments(admin: dict = Depends(require_admin)) -> dict:
+    _require_stripe()
+    try:
+        res = stripe.checkout.Session.list(limit=40, expand=["data.payment_intent"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    out = []
+    for s in res.get("data", []):
+        pi = s.get("payment_intent")
+        pi_id = pi.get("id") if isinstance(pi, dict) else pi
+        refunded = False
+        amount_refunded = 0
+        if isinstance(pi, dict):
+            amount_refunded = pi.get("amount_refunded") or 0
+            refunded = amount_refunded > 0
+        out.append({
+            "id": s.get("id"),
+            "created": s.get("created"),
+            "amount": s.get("amount_total"),
+            "currency": s.get("currency"),
+            "status": s.get("status"),
+            "payment_status": s.get("payment_status"),
+            "customer_email": (s.get("customer_details") or {}).get("email"),
+            "payment_intent": pi_id,
+            "refunded": refunded,
+            "amount_refunded": amount_refunded,
+        })
+    return {"payments": out}
+
+
+class RefundIn(BaseModel):
+    payment_intent: str
+    amount: Optional[float] = None
+
+
+@app.post("/api/admin/stripe/refund")
+async def admin_stripe_refund(payload: RefundIn, admin: dict = Depends(require_admin)) -> dict:
+    _require_stripe()
+    try:
+        kwargs: dict = {"payment_intent": payload.payment_intent}
+        if payload.amount is not None:
+            kwargs["amount"] = _dollars_to_cents(payload.amount)
+        refund = stripe.Refund.create(**kwargs)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"refund": {"id": refund.id, "status": refund.status, "amount": refund.amount}}
+
+
+@app.get("/api/admin/stripe/coupons")
+async def admin_stripe_coupons(admin: dict = Depends(require_admin)) -> dict:
+    _require_stripe()
+    try:
+        promos = stripe.PromotionCode.list(limit=50, expand=["data.coupon"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    out = []
+    for pc in promos.get("data", []):
+        c = pc.get("coupon") or {}
+        out.append({
+            "id": pc.get("id"), "code": pc.get("code"), "active": pc.get("active"),
+            "coupon_id": c.get("id"), "percent_off": c.get("percent_off"),
+            "amount_off": c.get("amount_off"), "currency": c.get("currency"),
+            "duration": c.get("duration"), "times_redeemed": pc.get("times_redeemed"),
+        })
+    return {"coupons": out}
+
+
+class CouponIn(BaseModel):
+    name: str
+    percent_off: Optional[float] = None
+    amount_off: Optional[float] = None
+    currency: str = "usd"
+    duration: str = "once"
+    code: Optional[str] = None
+
+
+@app.post("/api/admin/stripe/coupons")
+async def admin_stripe_create_coupon(payload: CouponIn, admin: dict = Depends(require_admin)) -> dict:
+    _require_stripe()
+    if not payload.percent_off and not payload.amount_off:
+        raise HTTPException(status_code=400, detail="Set a percent off or an amount off.")
+    try:
+        ckwargs: dict = {"name": payload.name.strip(), "duration": payload.duration or "once"}
+        if payload.percent_off:
+            ckwargs["percent_off"] = float(payload.percent_off)
+        else:
+            ckwargs["amount_off"] = _dollars_to_cents(payload.amount_off)
+            ckwargs["currency"] = (payload.currency or "usd").lower()
+        coupon = stripe.Coupon.create(**ckwargs)
+        promo_kwargs: dict = {"coupon": coupon.id}
+        if payload.code:
+            promo_kwargs["code"] = payload.code.strip().upper()
+        promo = stripe.PromotionCode.create(**promo_kwargs)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"coupon": {"id": promo.id, "code": promo.code, "coupon_id": coupon.id}}
+
+
+@app.delete("/api/admin/stripe/coupons/{coupon_id}")
+async def admin_stripe_delete_coupon(coupon_id: str, admin: dict = Depends(require_admin)) -> dict:
+    _require_stripe()
+    try:
+        stripe.Coupon.delete(coupon_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"deleted": True}
 
 
 # ---------- Sign in with Google (Emergent-managed OAuth) ---------- #

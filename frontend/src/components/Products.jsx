@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ArrowUpRight, Heart, Eye } from 'lucide-react';
 import { useSite } from '../context/SiteContext';
 import { useAuth } from '../context/AuthContext';
-import { resolveMediaUrl, startProductCheckout } from '../lib/api';
+import api, { resolveMediaUrl, startProductCheckout } from '../lib/api';
 import { useToast } from '../hooks/use-toast';
 import ProductModal from './ProductModal';
 
@@ -11,10 +11,26 @@ export default function Products() {
   const { user, toggleFavorite } = useAuth();
   const { toast } = useToast();
   const p = site.products || {};
-  const items = p.items || [];
+  const [catalog, setCatalog] = useState(null);
+  const items = catalog || p.items || [];
   const favorites = user?.favorites || [];
   const [openItem, setOpenItem] = useState(null);
   const [buyingId, setBuyingId] = useState(null);
+
+  useEffect(() => {
+    api.get('/stripe/catalog').then(({ data }) => {
+      if (data.configured && Array.isArray(data.products) && data.products.length) {
+        setCatalog(data.products.map((sp) => ({
+          id: sp.id,
+          name: sp.name,
+          description: sp.description,
+          price: sp.price?.unit_amount != null ? `$${(sp.price.unit_amount / 100).toFixed(2)}` : '',
+          image: (sp.images && sp.images[0]) || '',
+          priceId: sp.price?.id,
+        })));
+      }
+    }).catch(() => {});
+  }, []);
 
   const onHeart = async (e, item) => {
     e.stopPropagation();
