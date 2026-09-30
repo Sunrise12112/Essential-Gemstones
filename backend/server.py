@@ -927,7 +927,13 @@ async def admin_2fa_email_send(admin: dict = Depends(require_challenge_2fa)) -> 
     code = _new_email_otp()
     await _store_email_otp(doc["_id"], code)
     try:
-        await send_email(email, "Your Essential Gemstones admin code", _email_otp_html(doc.get("username", "there"), code))
+        await asyncio.wait_for(
+            send_email(email, "Your Essential Gemstones admin code", _email_otp_html(doc.get("username", "there"), code)),
+            timeout=15,
+        )
+    except asyncio.TimeoutError:
+        logging.error("Admin 2FA email OTP send timed out")
+        raise HTTPException(status_code=504, detail="Email is taking too long to send right now. Please use your authenticator app, or try again in a minute.")
     except Exception as e:
         logging.exception("Failed to send admin 2FA email OTP")
         raise HTTPException(status_code=502, detail=f"Couldn\u2019t send the email: {e}")
