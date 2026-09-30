@@ -1,5 +1,8 @@
 # Essential Gemstones — PRD
 
+> **2026-06 update**: Added clickable "Built by Nano AI" credit (links to nano-ai.org) to all AI surfaces — customer chat widget (`ChatBubble.jsx`), and the Admin AI panel/site editor (`AIWriter.jsx`). Also replaced the stale "Claude" badge in the Admin AI header with a "Nano AI" link.
+
+
 ## Original Problem Statement
 Recreate essentialgemstones.com pixel-perfectly with an artisan, earthy aesthetic. Full CMS admin for content editing, multi-admin support with permissions, Gmail SMTP newsletter subscription, Hero video with tap-to-unmute, member accounts/auth with VIP perks and favorites, Claude-powered AI chat widget, Admin AI Site Editor, and per-user persistent chat memory.
 

@@ -230,7 +230,7 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
               ) : (
                 <>
                   <span className="font-serif text-lg truncate">{sessionId ? (currentSession?.title || 'Admin AI') : 'Admin AI'}</span>
-                  <span className="text-[10px] tracking-[0.2em] uppercase bg-[#c9a876]/20 text-[#c9a876] px-2 py-0.5 rounded shrink-0">Claude</span>
+                  <a href="https://nano-ai.org" target="_blank" rel="noreferrer" data-testid="admin-ai-nano-badge" className="text-[10px] tracking-[0.2em] uppercase bg-[#c9a876]/20 text-[#c9a876] px-2 py-0.5 rounded shrink-0 hover:bg-[#c9a876]/30 transition-colors">Nano AI</a>
                   {sessionId && <button onClick={startRename} className="text-[#8b6b4f] hover:text-[#c9a876] shrink-0" aria-label="Rename"><Pencil className="w-3 h-3" /></button>}
                 </>
               )}
@@ -396,7 +396,11 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
           </button>
         </div>
-        <p className="text-[10px] text-[#8b6b4f] text-center py-2 bg-[#faf6f0]">Site edits apply immediately and can be undone. Emails are sent only after you confirm.</p>
+        <p className="text-[10px] text-[#8b6b4f] text-center py-2 bg-[#faf6f0]">
+          Site edits apply immediately and can be undone. Emails are sent only after you confirm.
+          {' \u00b7 '}
+          <a href="https://nano-ai.org" target="_blank" rel="noreferrer" data-testid="admin-ai-built-by-nano" className="underline hover:text-[#6b4f3a] transition-colors">Built by Nano AI</a>
+        </p>
       </div>
     </div>
   );

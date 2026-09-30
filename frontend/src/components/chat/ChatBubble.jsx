@@ -300,7 +300,11 @@ export default function ChatBubble() {
               </button>
             </div>
           )}
-          <p className="text-[10px] text-[#8b6b4f] text-center py-1.5 bg-[#faf6f0]">{user ? `Signed in \u2014 your chats are saved to your account` : 'Powered by AI \u00b7 chats saved to this browser'}</p>
+          <p className="text-[10px] text-[#8b6b4f] text-center py-1.5 bg-[#faf6f0]">
+            {user ? `Signed in \u2014 your chats are saved to your account` : 'Chats saved to this browser'}
+            {' \u00b7 '}
+            <a href="https://nano-ai.org" target="_blank" rel="noreferrer" data-testid="chat-built-by-nano" className="underline hover:text-[#6b4f3a] transition-colors">Built by Nano AI</a>
+          </p>
         </div>
       )}
     </>
