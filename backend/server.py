@@ -1667,13 +1667,42 @@ STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 _STRIPE_PLACEHOLDER_KEYS = {"", "sk_test_emergent"}
 
 
-def _stripe_ready() -> bool:
-    return bool(stripe.api_key) and stripe.api_key not in _STRIPE_PLACEHOLDER_KEYS
+async def _stripe_on() -> bool:
+    """Load the connected Stripe key (DB first, then env) into the SDK. True if ready."""
+    key = ""
+    try:
+        doc = await db.app_settings.find_one({"_id": "stripe"})
+        if doc and doc.get("api_key"):
+            key = doc["api_key"]
+    except Exception:
+        pass
+    if not key:
+        env = os.environ.get("STRIPE_API_KEY") or ""
+        key = "" if env in _STRIPE_PLACEHOLDER_KEYS else env
+    stripe.api_key = key
+    return bool(key)
 
 
-def _require_stripe() -> None:
-    if not _stripe_ready():
-        raise HTTPException(status_code=503, detail="Stripe isn't connected yet. Add your Stripe secret key to enable payments.")
+async def _need_stripe() -> None:
+    if not await _stripe_on():
+        raise HTTPException(status_code=503, detail="Stripe isn't connected yet. Paste your Stripe Secret key in the admin to enable payments.")
+
+
+async def _stripe_status_payload() -> dict:
+    if not await _stripe_on():
+        return {"configured": False}
+    try:
+        acct = stripe.Account.retrieve()
+        return {
+            "configured": True,
+            "mode": "test" if stripe.api_key.startswith("sk_test") else "live",
+            "account_id": acct.get("id"),
+            "business": (acct.get("business_profile") or {}).get("name"),
+            "email": acct.get("email"),
+            "last4": stripe.api_key[-4:],
+        }
+    except Exception as e:
+        return {"configured": False, "error": str(e)}
 
 
 def _dollars_to_cents(value: Any) -> int:
@@ -1709,7 +1738,7 @@ class CheckoutRequest(BaseModel):
 
 @app.post("/api/payments/checkout")
 async def create_checkout(req: CheckoutRequest) -> dict:
-    _require_stripe()
+    await _need_stripe()
     origin = req.origin_url.rstrip("/")
     product_name = ""
     amount = 0
@@ -1760,7 +1789,7 @@ async def payment_status(session_id: str) -> dict:
     record = await db.payment_transactions.find_one({"session_id": session_id})
     if not record:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    if record.get("payment_status") != "paid" and _stripe_ready():
+    if record.get("payment_status") != "paid" and await _stripe_on():
         try:
             s = stripe.checkout.Session.retrieve(session_id)
             if s.payment_status == "paid" or s.status == "complete":
@@ -1781,7 +1810,7 @@ async def payment_status(session_id: str) -> dict:
 @app.get("/api/stripe/catalog")
 async def stripe_catalog() -> dict:
     """Public: active Stripe products with a price, for the storefront."""
-    if not _stripe_ready():
+    if not await _stripe_on():
         return {"configured": False, "products": []}
     try:
         res = stripe.Product.list(active=True, limit=100, expand=["data.default_price"])
@@ -1825,24 +1854,37 @@ async def stripe_webhook(request: Request) -> dict:
 
 @app.get("/api/admin/stripe/status")
 async def admin_stripe_status(admin: dict = Depends(require_admin)) -> dict:
-    if not _stripe_ready():
-        return {"configured": False}
+    return await _stripe_status_payload()
+
+
+class StripeConnectIn(BaseModel):
+    api_key: str
+
+
+@app.post("/api/admin/stripe/connect")
+async def admin_stripe_connect(payload: StripeConnectIn, admin: dict = Depends(require_admin)) -> dict:
+    key = (payload.api_key or "").strip()
+    if not key.startswith("sk_"):
+        raise HTTPException(status_code=400, detail="That doesn't look like a Stripe Secret key. It should start with 'sk_live_' or 'sk_test_'. Copy the Secret key from Stripe \u2192 Developers \u2192 API keys (not the Publishable key).")
     try:
-        acct = stripe.Account.retrieve()
-        return {
-            "configured": True,
-            "mode": "live" if stripe.api_key.startswith("sk_live") else "test",
-            "account_id": acct.get("id"),
-            "business": (acct.get("business_profile") or {}).get("name"),
-            "email": acct.get("email"),
-        }
-    except Exception as e:
-        return {"configured": False, "error": str(e)}
+        stripe.Account.retrieve(api_key=key)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Stripe didn't accept that key. Make sure you copied the entire Secret key and that it's from the right account, then try again.")
+    await db.app_settings.update_one({"_id": "stripe"}, {"$set": {"api_key": key, "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    stripe.api_key = key
+    return await _stripe_status_payload()
+
+
+@app.post("/api/admin/stripe/disconnect")
+async def admin_stripe_disconnect(admin: dict = Depends(require_admin)) -> dict:
+    await db.app_settings.delete_one({"_id": "stripe"})
+    stripe.api_key = os.environ.get("STRIPE_API_KEY") or ""
+    return {"configured": False}
 
 
 @app.get("/api/admin/stripe/products")
 async def admin_stripe_products(admin: dict = Depends(require_admin)) -> dict:
-    _require_stripe()
+    await _need_stripe()
     try:
         res = stripe.Product.list(limit=100, expand=["data.default_price"])
     except Exception as e:
@@ -1861,7 +1903,7 @@ class StripeProductIn(BaseModel):
 
 @app.post("/api/admin/stripe/products")
 async def admin_stripe_create_product(payload: StripeProductIn, admin: dict = Depends(require_admin)) -> dict:
-    _require_stripe()
+    await _need_stripe()
     cents = _dollars_to_cents(payload.price)
     if cents < 50:
         raise HTTPException(status_code=400, detail="Price must be at least $0.50")
@@ -1892,7 +1934,7 @@ class StripeProductUpdateIn(BaseModel):
 
 @app.put("/api/admin/stripe/products/{product_id}")
 async def admin_stripe_update_product(product_id: str, payload: StripeProductUpdateIn, admin: dict = Depends(require_admin)) -> dict:
-    _require_stripe()
+    await _need_stripe()
     mods: dict = {}
     if payload.name is not None:
         mods["name"] = payload.name.strip()
@@ -1921,7 +1963,7 @@ async def admin_stripe_update_product(product_id: str, payload: StripeProductUpd
 
 @app.delete("/api/admin/stripe/products/{product_id}")
 async def admin_stripe_delete_product(product_id: str, admin: dict = Depends(require_admin)) -> dict:
-    _require_stripe()
+    await _need_stripe()
     try:
         try:
             stripe.Product.delete(product_id)
@@ -1935,7 +1977,7 @@ async def admin_stripe_delete_product(product_id: str, admin: dict = Depends(req
 
 @app.get("/api/admin/stripe/payments")
 async def admin_stripe_payments(admin: dict = Depends(require_admin)) -> dict:
-    _require_stripe()
+    await _need_stripe()
     try:
         res = stripe.checkout.Session.list(limit=40, expand=["data.payment_intent"])
     except Exception as e:
@@ -1971,7 +2013,7 @@ class RefundIn(BaseModel):
 
 @app.post("/api/admin/stripe/refund")
 async def admin_stripe_refund(payload: RefundIn, admin: dict = Depends(require_admin)) -> dict:
-    _require_stripe()
+    await _need_stripe()
     try:
         kwargs: dict = {"payment_intent": payload.payment_intent}
         if payload.amount is not None:
@@ -1984,7 +2026,7 @@ async def admin_stripe_refund(payload: RefundIn, admin: dict = Depends(require_a
 
 @app.get("/api/admin/stripe/coupons")
 async def admin_stripe_coupons(admin: dict = Depends(require_admin)) -> dict:
-    _require_stripe()
+    await _need_stripe()
     try:
         promos = stripe.PromotionCode.list(limit=50, expand=["data.coupon"])
     except Exception as e:
@@ -2012,7 +2054,7 @@ class CouponIn(BaseModel):
 
 @app.post("/api/admin/stripe/coupons")
 async def admin_stripe_create_coupon(payload: CouponIn, admin: dict = Depends(require_admin)) -> dict:
-    _require_stripe()
+    await _need_stripe()
     if not payload.percent_off and not payload.amount_off:
         raise HTTPException(status_code=400, detail="Set a percent off or an amount off.")
     try:
@@ -2034,7 +2076,7 @@ async def admin_stripe_create_coupon(payload: CouponIn, admin: dict = Depends(re
 
 @app.delete("/api/admin/stripe/coupons/{coupon_id}")
 async def admin_stripe_delete_coupon(coupon_id: str, admin: dict = Depends(require_admin)) -> dict:
-    _require_stripe()
+    await _need_stripe()
     try:
         stripe.Coupon.delete(coupon_id)
     except Exception as e:

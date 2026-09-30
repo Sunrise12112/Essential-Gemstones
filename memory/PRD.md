@@ -212,3 +212,10 @@ Context: the Emergent claimable sandbox was UNLINKED by the user. Dead sandbox s
 
 ### Deployment note (2026-06)
 - Production deploy failed: the deployed **CORS_ORIGINS secret** is `*`/placeholder, rejected by the server guard (server.py ~2302). FIX (user): Deployment Panel → Secrets → set `CORS_ORIGINS` to an explicit list (e.g. `https://gemstone-makeover.emergent.host,https://essentialgemstones.com,https://www.essentialgemstones.com`), then redeploy. Previous healthy deploy stays live. Guard is intentional — do NOT allow `*` with credentials.
+
+## 2026-06 (3) — Connect Stripe from the admin (paste key)
+- New **Connect Stripe** box on /admin/stripe: admin pastes Stripe Secret key; backend validates via stripe.Account.retrieve(api_key=...) and stores it server-side in db.app_settings (_id:"stripe"). Key never returned to browser — only business/mode/last4 shown. Disconnect button clears it.
+- Per-request key resolution: _stripe_on() loads DB key (fallback env STRIPE_API_KEY, ignoring sk_test_emergent placeholder) into the SDK before every Stripe call (multi-pod safe).
+- Endpoints: POST /api/admin/stripe/connect, POST /api/admin/stripe/disconnect; GET /api/admin/stripe/status returns business/mode/last4.
+- STRIPE_SETUP.md rewritten (get Live key -> paste -> full secrets table incl CORS_ORIGINS deploy fix).
+- Verified via curl: bad pk_ key ->friendly 400; fake sk_ ->stripe rejected 400; status not configured; frontend compiles. NOT verifiable here: successful connect with a real valid key.

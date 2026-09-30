@@ -1,67 +1,77 @@
-# 💳 How Payments Work on Your Site (Super Simple Guide)
+# 🟢 Turn On Payments — Your Simple Setup Guide
 
-Your shop now takes payments with **Stripe** — the same secure system used by millions
-of stores. Every product has a **"Buy Now"** button. When a customer taps it, they go to
-a safe Stripe page, pay with their card, and come back to a "Thank you" page. You get the money. 🎉
-
-You do **not** need to touch any code. Here's everything you need to know.
+This guide gets your shop taking real money. No code, no developer console — just copy one key
+and paste it into your admin. Takes about 5 minutes.
 
 ---
 
-## ✅ What's already done for you
-- Stripe is connected to your site (test mode for now).
-- Every product with a price shows a **Buy Now** button automatically.
-- Customers see a "Thank you" page after paying and a "No worries" page if they cancel.
+## Step 1 — Get your Stripe Secret key
 
-## 🧪 Try it right now (test mode)
-1. Open your website and click **Buy Now** on any product.
-2. On the Stripe page, use this fake test card:
-   - **Card number:** `4242 4242 4242 4242`
-   - **Expiry:** any future date (e.g. `12/34`)
-   - **CVC:** any 3 numbers (e.g. `123`)
-   - **ZIP:** any 5 numbers (e.g. `12345`)
-3. Click pay — you'll land on the "Thank you" page. That's a full test purchase!
-
-> Test mode uses fake money. No real cards are charged until you switch to live mode (Step below).
+1. Go to **https://stripe.com** and log in (or click **Start now** to create a free account).
+2. Once you're in the Stripe Dashboard, look at the **top-right toggle**:
+   - **Live mode** = real cards get charged, real money reaches your bank. ← use this to actually sell.
+   - **Test mode** = pretend money, for practice.
+   > ⚠️ **Live means real charges.** If you just want to try things first, stay in Test mode for now.
+3. In the left menu (or search bar) go to **Developers → API keys**.
+4. Find the **Secret key** row. It's hidden — click **Reveal** / **Reveal live key**.
+   - It starts with `sk_live_` (Live) or `sk_test_` (Test).
+   - ✅ Copy the **Secret key**. ❌ Do **not** use the "Publishable key" (that one starts with `pk_`).
 
 ---
 
-## 💵 How to change a product's price
-1. Go to **yoursite.com/admin** and sign in.
-2. Open **Collection (Products)**.
-3. Change the **Price** box (for example `$28.00`).
-4. Click **Save changes**.
+## Step 2 — Paste it into your shop
 
-That new price is exactly what the customer pays at checkout. Simple as that.
+1. Open your admin: go to your site and add **`/admin`**, sign in.
+2. Click **Stripe Store** (top of the dashboard).
+3. In the **Connect Stripe** box, paste your Secret key and click **Connect**.
+4. The app checks it with Stripe. When it works you'll see a green:
+   **`Connected ✓ — <Your business name> · Live · ••••ABCD`**
+   (Only the last 4 characters are ever shown again — your full key stays safe on the server.)
+5. If you see a red message, it usually means you pasted the Publishable key by mistake, or only part
+   of the key. Re-copy the **Secret** key and try again.
 
-> Tip: Use a normal price like `$28.00` or `$28`. The Buy Now button needs at least $0.50.
+That's it — your store is on. 🎉
 
----
+### From now on you can, right inside the admin:
+- **Products** — add, edit, price, add photos, hide/show, delete (each one is created in your Stripe account).
+- **Orders** — see every paid checkout and **issue refunds**.
+- **Discounts** — create codes (like `FAMILY10`) that customers type at checkout.
 
-## 🔗 Optional: use your own Stripe payment link instead
-If you'd rather make a payment link yourself inside Stripe:
-1. In the product editor there's an **"Optional Stripe payment link"** box.
-2. Paste a link that starts with `https://buy.stripe.com/...`
-3. Save. That product's Buy Now button will now open your link instead of the built-in checkout.
-
-Leave the box empty to use the built-in checkout (recommended — it uses the price you set).
-
----
-
-## 🚀 Going live (accepting real money)
-When you're ready to accept real payments:
-1. Ask your Emergent builder to help you **claim your Stripe account** (one click on a link Stripe emails you).
-2. Fill in your details with Stripe (name, bank account for payouts) — this is called KYC.
-3. Once Stripe approves you, your site automatically switches from test mode to **live mode** on the next deploy.
-
-That's it. After that, real customers pay with real cards and the money goes to your bank. 💰
+To swap keys later, click **Disconnect** and paste a new one.
 
 ---
 
-## ❓ Common questions
-- **Do I need a Stripe login?** Not for testing. You'll claim one when you go live.
-- **Where do I see my sales?** In your Stripe Dashboard once you've claimed your account.
-- **Can I refund someone?** Yes — from the Stripe Dashboard, or ask your builder to add a refund button.
-- **Is it safe?** Yes. Card details go straight to Stripe — they never touch your website.
+## Step 3 — The full list of secrets your live site uses
 
-Need anything changed? Just ask your Emergent builder. 🙌
+Here's everything the site relies on. Most are **already set up** — you only need to handle the two marked 👉.
+
+| What | What it's for | Do you need to do anything? |
+|---|---|---|
+| 👉 **Stripe Secret key** | Taking payments | **Yes — you paste it** in the Connect Stripe box (Steps 1–2 above). |
+| 👉 **Allowed website addresses** (`CORS_ORIGINS`) | Lets your live web address talk to the server. **This is what's currently blocking your deploy.** | **Yes — set it once** (see below), then redeploy. |
+| AI key (`EMERGENT_LLM_KEY`) | The chat assistant & AI site editor | ✅ Already set — leave as-is. |
+| Email sending (`SMTP_*`) | Welcome emails, admin login codes | ✅ Already set — leave as-is. |
+| Newsletter sending (`RESEND_API_KEY`) | Newsletter delivery | ✅ Already set — leave as-is. |
+| Member login secret (`JWT_SECRET`) | Keeps member & admin logins secure | ✅ Already set — leave as-is. |
+| Database (`MONGO_URL`, `DB_NAME`) | Stores your content, members, orders | ✅ Already set — leave as-is. |
+
+### Fixing the "allowed website addresses" (unblocks deployment)
+1. In Emergent, open your **Deployment** panel → **Secrets**.
+2. Find **`CORS_ORIGINS`** and set its value to this exact list (no spaces, commas between):
+
+   ```
+   https://gemstone-makeover.emergent.host,https://essentialgemstones.com,https://www.essentialgemstones.com
+   ```
+
+   (Replace with your real live web addresses if different. Do **not** use `*`.)
+3. Click save, then **Redeploy**.
+   > Note: a plain redeploy without changing this value won't help — the old value sticks until you edit it here.
+
+---
+
+## Quick answers
+- **Is my key safe?** Yes. It's stored on the server and used only to talk to Stripe. The browser never sees it again — only the last 4 digits.
+- **Test before going live?** Paste a `sk_test_` key, use test card `4242 4242 4242 4242` (any future date, any CVC), then swap to your `sk_live_` key when ready.
+- **Where do payouts go?** To the bank account you add inside Stripe (Stripe → Settings → Payouts).
+
+Need a hand with any step? Just ask. 🙌

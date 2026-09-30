@@ -21,6 +21,17 @@ export default function StripeProducts() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const refreshStatus = useCallback(async () => {
+    try { const r = await api.get('/admin/stripe/status'); setStatus(r.data); }
+    catch { setStatus({ configured: false }); }
+  }, []);
+
+  const disconnect = async () => {
+    if (!window.confirm('Disconnect Stripe? Your store will switch off until you paste a key again.')) return;
+    try { await api.post('/admin/stripe/disconnect'); setStatus({ configured: false }); toast({ title: 'Stripe disconnected' }); }
+    catch (e) { toast({ title: 'Could not disconnect', description: e?.response?.data?.detail || e.message, variant: 'destructive' }); }
+  };
+
   useEffect(() => {
     if (!localStorage.getItem('eg_admin_token')) { navigate('/admin'); return; }
     api.get('/admin/stripe/status').then((r) => setStatus(r.data)).catch(() => setStatus({ configured: false })).finally(() => setLoading(false));
@@ -37,7 +48,10 @@ export default function StripeProducts() {
             <h1 className="font-serif text-xl">Stripe Store</h1>
           </div>
           {status?.configured ? (
-            <span data-testid="stripe-status-badge" className="inline-flex items-center gap-1.5 text-xs bg-green-500/15 text-green-300 border border-green-500/30 px-3 py-1.5 rounded-full"><CheckCircle2 className="w-3.5 h-3.5" /> Connected · {status.mode}</span>
+            <div className="flex items-center gap-2">
+              <span data-testid="stripe-status-badge" className="inline-flex items-center gap-1.5 text-xs bg-green-500/15 text-green-300 border border-green-500/30 px-3 py-1.5 rounded-full"><CheckCircle2 className="w-3.5 h-3.5" /> Connected{status.business ? ` · ${status.business}` : ''} · {status.mode}{status.last4 ? ` · ••••${status.last4}` : ''}</span>
+              <button onClick={disconnect} data-testid="stripe-disconnect" className="text-xs px-3 py-1.5 border border-[#3d2f24] rounded-full hover:bg-[#241b15]">Disconnect</button>
+            </div>
           ) : (
             <span data-testid="stripe-status-badge" className="inline-flex items-center gap-1.5 text-xs bg-amber-500/15 text-amber-300 border border-amber-500/30 px-3 py-1.5 rounded-full"><AlertTriangle className="w-3.5 h-3.5" /> Not connected</span>
           )}
@@ -46,7 +60,7 @@ export default function StripeProducts() {
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         {!status?.configured ? (
-          <NotConnected error={status?.error} />
+          <ConnectStripe onConnected={(s) => setStatus(s)} toast={toast} />
         ) : (
           <>
             <div className="flex gap-2 mb-6 overflow-x-auto">
@@ -70,18 +84,46 @@ export default function StripeProducts() {
   );
 }
 
-function NotConnected({ error }) {
+function ConnectStripe({ onConnected, toast }) {
+  const [key, setKey] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const connect = async () => {
+    if (!key.trim()) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post('/admin/stripe/connect', { api_key: key.trim() });
+      toast({ title: 'Connected to Stripe', description: data.business ? `${data.business} · ${data.mode}` : `Mode: ${data.mode}` });
+      setKey('');
+      onConnected(data);
+    } catch (e) {
+      toast({ title: 'Could not connect', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
+    } finally { setBusy(false); }
+  };
+
   return (
-    <div data-testid="stripe-not-connected" className="max-w-2xl mx-auto bg-white border border-[#e8dfd1] rounded-3xl p-8 text-center">
+    <div data-testid="stripe-connect-box" className="max-w-2xl mx-auto bg-white border border-[#e8dfd1] rounded-3xl p-8">
       <span className="w-14 h-14 rounded-full bg-[#f3ece0] flex items-center justify-center mx-auto mb-5"><Package className="w-7 h-7 text-[#6b4f3a]" /></span>
-      <h2 className="font-serif text-3xl text-[#1a1410] mb-3">Connect your Stripe account</h2>
-      <p className="text-sm text-[#5a4a3d] mb-5 leading-relaxed">To manage products, orders, refunds and discount codes here, add your Stripe <strong>Secret key</strong> to this app. Once it's set, this page turns on automatically.</p>
-      <ol className="text-left text-sm text-[#3d3128] space-y-2 mb-6 max-w-md mx-auto">
-        <li>1. In Stripe, go to <strong>Developers → API keys</strong> and copy your <strong>Secret key</strong> (starts with <code>sk_test_</code> or <code>sk_live_</code>).</li>
-        <li>2. In Emergent, open the <strong>Payments / Secrets</strong> panel and add a secret named <code>STRIPE_API_KEY</code> with that value.</li>
-        <li>3. Come back here and refresh — you'll see "Connected".</li>
-      </ol>
-      {error && <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">Last check: {error}</p>}
+      <h2 className="font-serif text-3xl text-[#1a1410] mb-2 text-center">Connect Stripe</h2>
+      <p className="text-sm text-[#5a4a3d] mb-6 text-center leading-relaxed">Paste your Stripe <strong>Secret key</strong> below to turn your store on. You only do this once. We check it with Stripe and keep it safe on the server — it's never shown again.</p>
+      <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Stripe Secret key</label>
+      <input
+        type="password"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') connect(); }}
+        placeholder="sk_live_...  (or sk_test_... to trial first)"
+        data-testid="stripe-connect-input"
+        className="w-full px-4 py-3.5 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-[#faf6f0] font-mono text-sm mb-4"
+      />
+      <button onClick={connect} disabled={busy || !key.trim()} data-testid="stripe-connect-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-2">
+        {busy ? <><RefreshCw className="w-4 h-4 animate-spin" /> Checking with Stripe…</> : <><CheckCircle2 className="w-4 h-4" /> Connect</>}
+      </button>
+      <div className="mt-6 text-left text-xs text-[#5a4a3d] bg-[#faf6f0] border border-[#e8dfd1] rounded-2xl p-4 leading-relaxed">
+        <p className="font-medium text-[#1a1410] mb-1">Where do I find it?</p>
+        <p>In Stripe: <strong>Developers → API keys → Secret key</strong> (starts with <code>sk_live_</code>). Copy the <em>Secret</em> key, not the Publishable one. Full step-by-step is in <code>STRIPE_SETUP.md</code>.</p>
+        <p className="mt-2 text-amber-700">⚠️ A <strong>Live</strong> key charges real cards. Use a <code>sk_test_</code> key first if you want to practice.</p>
+      </div>
     </div>
   );
 }
