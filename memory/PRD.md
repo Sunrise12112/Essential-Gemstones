@@ -219,3 +219,9 @@ Context: the Emergent claimable sandbox was UNLINKED by the user. Dead sandbox s
 - Endpoints: POST /api/admin/stripe/connect, POST /api/admin/stripe/disconnect; GET /api/admin/stripe/status returns business/mode/last4.
 - STRIPE_SETUP.md rewritten (get Live key -> paste -> full secrets table incl CORS_ORIGINS deploy fix).
 - Verified via curl: bad pk_ key ->friendly 400; fake sk_ ->stripe rejected 400; status not configured; frontend compiles. NOT verifiable here: successful connect with a real valid key.
+
+## 2026-06 (4) — ALL Stripe removed (user pivot)
+- User hit a failed coupon delete (restricted-key symptom) and decided to drop Stripe entirely.
+- Removed: import stripe; whole Stripe block in server.py (checkout, status/catalog/webhook, connect/disconnect, products/orders/refunds/coupons CRUD, all helpers); frontend StripeProducts.jsx, PaymentSuccess.jsx, PaymentCancel.jsx + their routes; startProductCheckout in lib/api.js; Stripe Store link in admin; STRIPE_SETUP.md; test_stripe_nanoai_no_sms.py.
+- Buy model reverted to the simple per-product manual link: admin pastes any URL (Stripe/PayPal/Etsy/etc.) into the product "Buy link" field; Buy Now / Buy now opens it in a new tab. Blank = no Buy button ("Tap for details").
+- Verified: backend healthy, /api/stripe/catalog and /api/payments/checkout now 404; /api/site returns 2 products + nanoAI; frontend compiles (only pre-existing exhaustive-deps warning); homepage renders.

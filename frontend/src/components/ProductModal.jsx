@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { X, Heart, ArrowUpRight, Bell, BellRing, ShieldCheck, Sparkles, Truck } from 'lucide-react';
-import api, { resolveMediaUrl, startProductCheckout } from '../lib/api';
+import api, { resolveMediaUrl } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../hooks/use-toast';
 
@@ -11,7 +11,6 @@ export default function ProductModal({ product, open, onClose }) {
   const [waitlistJoined, setWaitlistJoined] = useState(false);
   const [guestEmail, setGuestEmail] = useState('');
   const [waiting, setWaiting] = useState(false);
-  const [buying, setBuying] = useState(false);
   const dialogRef = useRef(null);
 
   const gallery = React.useMemo(() => {
@@ -83,17 +82,6 @@ export default function ProductModal({ product, open, onClose }) {
       toast({ title: 'Couldn\u2019t join the list', description: e?.response?.data?.detail || e.message, variant: 'destructive' });
     } finally {
       setWaiting(false);
-    }
-  };
-
-  const handleBuy = async () => {
-    setBuying(true);
-    try {
-      await startProductCheckout(product);
-    } catch (err) {
-      toast({ title: 'Checkout unavailable', description: err?.response?.data?.detail || 'Please try again in a moment.', variant: 'destructive' });
-    } finally {
-      setBuying(false);
     }
   };
 
@@ -223,16 +211,16 @@ export default function ProductModal({ product, open, onClose }) {
 
             {/* CTA row */}
             <div className="space-y-3">
-              {(product.buyUrl || product.price) ? (
-                <button
-                  type="button"
-                  onClick={handleBuy}
-                  disabled={buying}
+              {product.buyUrl ? (
+                <a
+                  href={product.buyUrl}
+                  target="_blank"
+                  rel="noreferrer"
                   data-testid="product-modal-buy"
-                  className="w-full inline-flex items-center justify-center gap-2 px-6 py-4 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60"
+                  className="w-full inline-flex items-center justify-center gap-2 px-6 py-4 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors"
                 >
-                  {buying ? 'Starting checkout…' : <>Buy now <ArrowUpRight className="w-4 h-4" /></>}
-                </button>
+                  Buy now <ArrowUpRight className="w-4 h-4" />
+                </a>
               ) : (
                 <div className="w-full text-center px-6 py-4 border border-[#e8dfd1] rounded-full text-sm uppercase tracking-wider text-[#8b6b4f] bg-white">
                   Currently unavailable

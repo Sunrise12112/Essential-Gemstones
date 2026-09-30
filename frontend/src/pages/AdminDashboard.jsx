@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { LogOut, Save, Eye, RefreshCw, ChevronUp, ChevronDown, Users, ShieldCheck, Sparkles, Undo2, X, ShoppingBag } from 'lucide-react';
+import { LogOut, Save, Eye, RefreshCw, ChevronUp, ChevronDown, Users, ShieldCheck, Sparkles, Undo2, X } from 'lucide-react';
 import api from '../lib/api';
 import { useSite } from '../context/SiteContext';
 import { useToast } from '../hooks/use-toast';
@@ -149,7 +149,6 @@ export default function AdminDashboard() {
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setAiOpen(true)} className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-[#c9a876]/15 border border-[#c9a876]/40 text-[#c9a876] rounded-full hover:bg-[#c9a876]/25" title="Write with AI"><Sparkles className="w-4 h-4" /> <span className="hidden sm:inline">AI Writer</span></button>
-            <Link to="/admin/stripe" className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-[#3d2f24] rounded-full hover:bg-[#241b15]"><ShoppingBag className="w-4 h-4" /> <span className="hidden sm:inline">Stripe Store</span></Link>
             <Link to="/" target="_blank" className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-[#3d2f24] rounded-full hover:bg-[#241b15]"><Eye className="w-4 h-4" /> View site</Link>
             <button onClick={save} disabled={saving} className="inline-flex items-center gap-2 px-5 py-2 bg-[#c9a876] text-[#1a1410] rounded-full text-sm font-medium hover:bg-[#d6b885] disabled:opacity-60">
               {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save changes
@@ -309,8 +308,8 @@ export default function AdminDashboard() {
                   <TextArea value={item.description} placeholder="Description" rows={2} onChange={(v) => { const arr=[...data.products.items]; arr[i]={...arr[i],description:v}; update(['products','items'],arr); }} />
                   <div className="grid sm:grid-cols-2 gap-3">
                     <div>
-                      <TextInput value={item.buyUrl} placeholder="https://buy.stripe.com/... (optional)" onChange={(v) => { const arr=[...data.products.items]; arr[i]={...arr[i],buyUrl:v}; update(['products','items'],arr); }} />
-                      <p className="text-[11px] text-[#8b6b4f] mt-1">Optional Stripe payment link. Leave blank to use the built-in Stripe checkout (uses the price above).</p>
+                      <TextInput value={item.buyUrl} placeholder="Buy link (paste any checkout/product URL)" onChange={(v) => { const arr=[...data.products.items]; arr[i]={...arr[i],buyUrl:v}; update(['products','items'],arr); }} />
+                      <p className="text-[11px] text-[#8b6b4f] mt-1">Paste any link (Stripe, PayPal, Etsy, etc.). The Buy button opens it. Leave blank for no Buy button.</p>
                     </div>
                     <TextInput value={item.badge} placeholder="Badge (e.g. New)" onChange={(v) => { const arr=[...data.products.items]; arr[i]={...arr[i],badge:v}; update(['products','items'],arr); }} />
                   </div>

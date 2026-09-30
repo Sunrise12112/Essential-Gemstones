@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { ArrowUpRight, Heart, Eye } from 'lucide-react';
 import { useSite } from '../context/SiteContext';
 import { useAuth } from '../context/AuthContext';
-import api, { resolveMediaUrl, startProductCheckout } from '../lib/api';
+import { resolveMediaUrl } from '../lib/api';
 import { useToast } from '../hooks/use-toast';
 import ProductModal from './ProductModal';
 
@@ -11,26 +11,9 @@ export default function Products() {
   const { user, toggleFavorite } = useAuth();
   const { toast } = useToast();
   const p = site.products || {};
-  const [catalog, setCatalog] = useState(null);
-  const items = catalog || p.items || [];
+  const items = p.items || [];
   const favorites = user?.favorites || [];
   const [openItem, setOpenItem] = useState(null);
-  const [buyingId, setBuyingId] = useState(null);
-
-  useEffect(() => {
-    api.get('/stripe/catalog').then(({ data }) => {
-      if (data.configured && Array.isArray(data.products) && data.products.length) {
-        setCatalog(data.products.map((sp) => ({
-          id: sp.id,
-          name: sp.name,
-          description: sp.description,
-          price: sp.price?.unit_amount != null ? `$${(sp.price.unit_amount / 100).toFixed(2)}` : '',
-          image: (sp.images && sp.images[0]) || '',
-          priceId: sp.price?.id,
-        })));
-      }
-    }).catch(() => {});
-  }, []);
 
   const onHeart = async (e, item) => {
     e.stopPropagation();
@@ -39,18 +22,6 @@ export default function Products() {
       toast({ title: 'Create a free account', description: 'Sign up to save your favorite pieces.' });
     } else if (res?.favorited) {
       toast({ title: 'Saved to favorites', description: item.name });
-    }
-  };
-
-  const handleBuy = async (e, item) => {
-    e.stopPropagation();
-    setBuyingId(item.id);
-    try {
-      await startProductCheckout(item);
-    } catch (err) {
-      toast({ title: 'Checkout unavailable', description: err?.response?.data?.detail || 'Please try again in a moment.', variant: 'destructive' });
-    } finally {
-      setBuyingId(null);
     }
   };
 
@@ -103,16 +74,17 @@ export default function Products() {
                   {it.description && <p className="text-[#5a4a3d] mb-6 leading-relaxed">{it.description}</p>}
                   <div className="flex items-center justify-between">
                     {it.price && <span className="font-serif text-xl text-[#6b4f3a]">{it.price}</span>}
-                    {(it.buyUrl || it.price) ? (
-                      <button
-                        type="button"
-                        onClick={(e) => handleBuy(e, it)}
-                        disabled={buyingId === it.id}
+                    {it.buyUrl ? (
+                      <a
+                        href={it.buyUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
                         data-testid={`product-buy-${it.id || i}`}
-                        className="inline-flex items-center gap-2 px-5 py-3 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm hover:bg-[#6b4f3a] transition-colors disabled:opacity-60"
+                        className="inline-flex items-center gap-2 px-5 py-3 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm hover:bg-[#6b4f3a] transition-colors"
                       >
-                        {buyingId === it.id ? 'Starting…' : <>Buy Now <ArrowUpRight className="w-4 h-4" /></>}
-                      </button>
+                        Buy Now <ArrowUpRight className="w-4 h-4" />
+                      </a>
                     ) : (
                       <span className="text-xs tracking-wider uppercase text-[#8b6b4f]">Tap for details</span>
                     )}
