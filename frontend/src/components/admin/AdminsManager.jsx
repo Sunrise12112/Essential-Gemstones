@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Trash2, Plus, Save, ShieldCheck, RefreshCw, KeyRound, ShieldOff, Mail, Pencil, X } from 'lucide-react';
+import { Trash2, Plus, Save, ShieldCheck, RefreshCw, KeyRound, ShieldOff, Mail, Pencil, X, Copy, Download, Check, Loader2 } from 'lucide-react';
 import api from '../../lib/api';
 import { useToast } from '../../hooks/use-toast';
 import { Field, TextInput } from './FormControls';
@@ -306,6 +306,7 @@ function AdminRow({ admin, allPerms, onUpdatePerms, onSetSuper, onUpdateEmail, o
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button onClick={onResetPassword} className="text-xs px-3 py-1.5 border border-[#e8dfd1] rounded-lg hover:bg-[#faf6f0] inline-flex items-center gap-1"><KeyRound className="w-3 h-3" /> Reset password</button>
+          {isCurrentUser && admin.twoFactorEnabled && <BackupCodesButton />}
           {!isCurrentUser && admin.twoFactorEnabled && (
             <button onClick={onReset2fa} data-testid={`admin-row-reset-2fa-${admin.id}`} className="text-xs px-3 py-1.5 border border-[#e8dfd1] rounded-lg hover:bg-[#faf6f0] inline-flex items-center gap-1"><ShieldOff className="w-3 h-3" /> Reset 2FA</button>
           )}
@@ -341,5 +342,144 @@ function AdminRow({ admin, allPerms, onUpdatePerms, onSetSuper, onUpdateEmail, o
         </div>
       )}
     </div>
+  );
+}
+
+
+function BackupCodesButton() {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [remaining, setRemaining] = useState(null);
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [codes, setCodes] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const loadRemaining = async () => {
+    try {
+      const { data } = await api.get('/admin/2fa/backup-codes');
+      setRemaining(data.remaining);
+    } catch (e) { /* ignore */ }
+  };
+
+  useEffect(() => { loadRemaining(); }, []);
+
+  const openModal = () => {
+    setCode('');
+    setCodes(null);
+    setCopied(false);
+    setOpen(true);
+  };
+
+  const closeModal = () => {
+    setOpen(false);
+    if (codes) loadRemaining();
+  };
+
+  const generate = async () => {
+    const c = code.trim();
+    if (c.length < 6 || busy) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post('/admin/2fa/backup-codes/regenerate', { code: c });
+      setCodes(data.backupCodes || []);
+      toast({ title: 'New backup codes ready', description: 'Save them now — your old codes no longer work.' });
+    } catch (e) {
+      toast({ title: 'Couldn\u2019t regenerate', description: e?.response?.data?.detail || 'Check your authenticator code and try again.', variant: 'destructive' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyAll = async () => {
+    try {
+      await navigator.clipboard.writeText((codes || []).join('\n'));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) { /* ignore */ }
+  };
+
+  const download = () => {
+    const blob = new Blob([`Essential Gemstones \u2014 admin backup codes\n\n${(codes || []).join('\n')}\n`], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'essential-gemstones-backup-codes.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <>
+      <button
+        onClick={openModal}
+        data-testid="regenerate-backup-codes-btn"
+        className="text-xs px-3 py-1.5 border border-[#e8dfd1] rounded-lg hover:bg-[#faf6f0] inline-flex items-center gap-1"
+        title="Generate a fresh set of one-time backup codes"
+      >
+        <RefreshCw className="w-3 h-3" /> Regenerate backup codes
+        {remaining !== null && <span className="ml-0.5 text-[#8b6b4f]">({remaining} left)</span>}
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-[#1a1410]/60 backdrop-blur-sm" data-testid="backup-codes-modal">
+          <div onClick={closeModal} className="absolute inset-0" />
+          <div className="relative w-full max-w-md bg-[#faf6f0] rounded-3xl shadow-2xl overflow-hidden">
+            <div className="bg-[#1a1410] text-[#faf6f0] px-6 py-4 flex items-center justify-between">
+              <span className="font-serif text-lg inline-flex items-center gap-2"><KeyRound className="w-4 h-4 text-[#c9a876]" /> Backup codes</span>
+              <button onClick={closeModal} aria-label="Close" data-testid="backup-codes-close" className="w-8 h-8 rounded-full hover:bg-[#241b15] flex items-center justify-center"><X className="w-4 h-4" /></button>
+            </div>
+
+            <div className="p-6">
+              {!codes ? (
+                <>
+                  <p className="text-sm text-[#5a4a3d] mb-4">
+                    Generating new codes will <strong className="text-[#1a1410]">invalidate all your existing backup codes</strong>. Enter the current 6-digit code from your authenticator app to confirm.
+                  </p>
+                  <input
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    onKeyDown={(e) => { if (e.key === 'Enter') generate(); }}
+                    inputMode="numeric"
+                    autoFocus
+                    placeholder="123456"
+                    data-testid="backup-codes-totp-input"
+                    className="w-full text-center tracking-[0.5em] text-lg px-4 py-3 border border-[#e8dfd1] rounded-2xl bg-white focus:outline-none focus:border-[#6b4f3a] font-mono"
+                  />
+                  <button
+                    onClick={generate}
+                    disabled={busy || code.trim().length < 6}
+                    data-testid="backup-codes-generate"
+                    className="mt-4 w-full inline-flex items-center justify-center gap-2 px-5 py-3 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm hover:bg-[#6b4f3a] disabled:opacity-50"
+                  >
+                    {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} Generate new codes
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-[#5a4a3d] mb-4">
+                    Save these somewhere safe. Each code works once. They <strong className="text-[#1a1410]">won\u2019t be shown again</strong>.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 mb-4" data-testid="backup-codes-list">
+                    {codes.map((c, i) => (
+                      <code key={i} className="font-mono text-sm bg-white border border-[#e8dfd1] rounded-lg px-3 py-2 text-center text-[#1a1410] select-all">{c}</code>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={copyAll} data-testid="backup-codes-copy" className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 border border-[#e8dfd1] rounded-full text-sm hover:bg-white">
+                      {copied ? <><Check className="w-4 h-4" /> Copied</> : <><Copy className="w-4 h-4" /> Copy all</>}
+                    </button>
+                    <button onClick={download} data-testid="backup-codes-download" className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 border border-[#e8dfd1] rounded-full text-sm hover:bg-white">
+                      <Download className="w-4 h-4" /> Download
+                    </button>
+                  </div>
+                  <button onClick={closeModal} data-testid="backup-codes-done" className="mt-3 w-full px-5 py-2.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm hover:bg-[#6b4f3a]">Done</button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
