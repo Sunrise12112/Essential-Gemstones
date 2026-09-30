@@ -46,6 +46,7 @@ MAX_VIDEO_BYTES = 50 * 1024 * 1024
 
 import io as _io
 import json
+import httpx
 import base64 as _base64
 import requests as _requests
 import re as _pw_re
@@ -2046,7 +2047,6 @@ async def shutdown_db_client() -> None:
 
 # ---------------- GEMINI CHAT ---------------- #
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
 from fastapi.responses import StreamingResponse
 import copy as _copy
 import json as _json
@@ -2056,7 +2056,66 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 CHAT_PROVIDER = "anthropic"
 CHAT_MODEL = "claude-sonnet-4-5"
 
+# Nano AI (the owner's own AI) powers the chat widget, admin AI and site editor.
+NANO_API_URL = os.environ.get("NANO_API_URL", "https://nano-ai.org/functions/nano-api")
+NANO_API_KEY = os.environ.get("NANO_API_KEY", "")
+NANO_MODEL = os.environ.get("NANO_MODEL", "claude_sonnet_4_6")
+
 CHAT_MODES = {"ask-luca", "stone-guide", "admin-writer"}
+
+
+async def _nano_generate(message: str, name: str, chat_id: Optional[str] = None) -> tuple[str, Optional[str]]:
+    """Send a message to the Nano AI REST API and return (reply, chatId)."""
+    if not NANO_API_KEY:
+        raise HTTPException(status_code=503, detail="Nano AI isn't configured yet (missing NANO_API_KEY).")
+    body: dict[str, Any] = {"message": message, "name": (name or "Guest")[:120], "model": NANO_MODEL}
+    if chat_id:
+        body["chatId"] = chat_id
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            resp = await client.post(NANO_API_URL, headers={"x-api-key": NANO_API_KEY, "Content-Type": "application/json"}, json=body)
+    except Exception:
+        logger.exception("Nano request failed")
+        raise HTTPException(status_code=504, detail="The AI is taking too long to respond right now. Please try again in a moment.")
+    if resp.status_code == 401:
+        raise HTTPException(status_code=502, detail="Nano AI key is invalid or inactive. Check your Nano API key.")
+    if resp.status_code == 403:
+        raise HTTPException(status_code=502, detail="Nano AI declined the request \u2014 API access requires the Max plan on your Nano account.")
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Nano AI returned an error ({resp.status_code}). Please try again.")
+    try:
+        data = resp.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="Nano AI sent an unreadable response. Please try again.")
+    return (data.get("reply") or "").strip(), data.get("chatId")
+
+
+async def _nano_name_from_request(request: Request) -> str:
+    auth = request.headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        try:
+            claims = jwt.decode(auth.split(" ", 1)[1], JWT_SECRET, algorithms=[JWT_ALG])
+            sub = claims.get("sub")
+            if claims.get("role") == "user":
+                u = await db.users.find_one({"_id": sub})
+                if u:
+                    return (u.get("fullName") or (u.get("email") or "").split("@")[0] or "Member").strip()
+            else:
+                a = await db.admins.find_one({"_id": sub})
+                if a:
+                    return (a.get("username") or "Admin").strip()
+        except jwt.PyJWTError:
+            pass
+    return "Guest"
+
+
+async def _nano_admin_name(admin: dict) -> str:
+    a = await db.admins.find_one({"_id": admin.get("sub")})
+    return ((a or {}).get("username") or "Admin").strip()
+
+
+def _chunk_text(text: str) -> list[str]:
+    return _re.findall(r"\S+\s*", text) or ([text] if text else [])
 
 
 class ChatMessageIn(BaseModel):
@@ -2233,7 +2292,7 @@ What lava stone means to us:
 
 @app.post("/api/chat/stream")
 async def chat_stream(payload: ChatMessageIn, request: Request) -> StreamingResponse:
-    if not EMERGENT_LLM_KEY:
+    if not NANO_API_KEY:
         raise HTTPException(status_code=503, detail="Chat is not configured")
     mode = (payload.mode or "").strip()
     if mode not in CHAT_MODES:
@@ -2294,47 +2353,30 @@ async def chat_stream(payload: ChatMessageIn, request: Request) -> StreamingResp
         if not session_doc.get("title"):
             await db.chat_sessions.update_one({"_id": session_id}, {"$set": {"title": _fallback_title_from(text), "userKey": user_key}})
 
-    # Reconstruct chat with prior history
     system_prompt = await _system_prompt_for(mode)
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=session_id,
-        system_message=system_prompt,
-    ).with_model(CHAT_PROVIDER, CHAT_MODEL)
-
-    # Replay prior turns so Gemini has full context (llm history is per-instance)
     prior = session_doc.get("messages") or []
+    nano_name = await _nano_name_from_request(request)
+    nano_chat_id = (session_doc.get("meta") or {}).get("nanoChatId")
+    # On the first turn we prime Nano with the persona; afterwards Nano remembers the thread.
+    msg_for_nano = (system_prompt + "\n\n---\n" + text) if not nano_chat_id else text
 
     async def event_generator():
-        # Warm up prior history via non-streaming send (we won't yield these)
-        try:
-            for m in prior:
-                if m.get("role") == "user":
-                    async for _ev in chat.stream_message(UserMessage(text=m.get("content", ""))):
-                        if isinstance(_ev, StreamDone):
-                            break
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("chat history replay failed: %s", exc)
-
-        # Yield session id first
         yield f"event: session\ndata: {session_id}\n\n"
-
         full_reply = ""
+        new_chat_id = nano_chat_id
         try:
-            async for ev in chat.stream_message(UserMessage(text=text)):
-                if isinstance(ev, TextDelta):
-                    chunk = ev.content or ""
-                    full_reply += chunk
-                    # SSE data lines cannot contain literal newlines; escape them
-                    escaped = chunk.replace("\r", "").replace("\n", "\\n")
-                    yield f"data: {escaped}\n\n"
-                elif isinstance(ev, StreamDone):
-                    break
+            full_reply, cid = await _nano_generate(msg_for_nano, name=nano_name, chat_id=nano_chat_id)
+            new_chat_id = cid or nano_chat_id
+            for tok in _chunk_text(full_reply):
+                escaped = tok.replace("\r", "").replace("\n", "\\n")
+                yield f"data: {escaped}\n\n"
+                await asyncio.sleep(0.015)
+        except HTTPException as exc:
+            yield f"event: error\ndata: {str(exc.detail)[:200]}\n\n"
         except Exception as exc:  # noqa: BLE001
-            logger.exception("chat stream failed: %s", exc)
+            logger.exception("nano chat failed: %s", exc)
             yield f"event: error\ndata: {str(exc)[:200]}\n\n"
 
-        # Persist to db (best effort)
         try:
             new_messages = prior + [
                 {"role": "user", "content": text, "at": now_iso},
@@ -2342,7 +2384,7 @@ async def chat_stream(payload: ChatMessageIn, request: Request) -> StreamingResp
             ]
             await db.chat_sessions.update_one(
                 {"_id": session_id},
-                {"$set": {"messages": new_messages, "updatedAt": datetime.utcnow().isoformat()}},
+                {"$set": {"messages": new_messages, "updatedAt": datetime.utcnow().isoformat(), "meta.nanoChatId": new_chat_id}},
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("chat persist failed: %s", exc)
@@ -2543,7 +2585,7 @@ def _set_at_path(root: dict, path: str, value: Any) -> None:
 
 @app.post("/api/admin/ai-edit")
 async def ai_edit_site(payload: AIEditIn, admin: dict = Depends(require_admin)) -> dict:
-    if not EMERGENT_LLM_KEY:
+    if not NANO_API_KEY:
         raise HTTPException(status_code=503, detail="AI is not configured")
     text = (payload.message or "").strip()
     if not text:
@@ -2575,16 +2617,8 @@ async def ai_edit_site(payload: AIEditIn, admin: dict = Depends(require_admin)) 
         + _json.dumps(site, ensure_ascii=False)
     )
 
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"ai-edit-{uuid.uuid4()}",
-        system_message=system_prompt,
-    ).with_model(CHAT_PROVIDER, CHAT_MODEL)
-
-    try:
-        reply = await chat.send_message(UserMessage(text=text))
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"AI request failed: {exc}")
+    nano_name = await _nano_admin_name(admin)
+    reply, _ = await _nano_generate(system_prompt + "\n\nADMIN INSTRUCTION:\n" + text, name=nano_name)
 
     parsed = _extract_json(reply)
     if not parsed or not isinstance(parsed, dict):
@@ -2899,7 +2933,7 @@ def _unified_admin_prompt(site_json: str, subscriber_count: int, admins_json: st
 @app.post("/api/admin/ai")
 async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = Depends(require_admin)) -> dict:
     """Single all-powerful admin AI. Auto-decides chat vs edit vs email broadcast."""
-    if not EMERGENT_LLM_KEY:
+    if not NANO_API_KEY:
         raise HTTPException(status_code=503, detail="AI is not configured")
     text = (payload.message or "").strip()
     if not text:
@@ -2956,26 +2990,13 @@ async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = D
 
     prior = session_doc.get("messages") or []
 
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=session_id,
-        system_message=system_prompt,
-    ).with_model(CHAT_PROVIDER, CHAT_MODEL)
-
-    # Warm up prior history in the model (best-effort)
-    try:
-        for m in prior[-20:]:
-            if m.get("role") == "user":
-                async for _ev in chat.stream_message(UserMessage(text=m.get("content", ""))):
-                    if isinstance(_ev, StreamDone):
-                        break
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("admin-ai history replay failed: %s", exc)
-
-    try:
-        reply_raw = await chat.send_message(UserMessage(text=text))
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"AI request failed: {exc}")
+    nano_name = await _nano_admin_name(admin)
+    hist = ""
+    for m in prior[-8:]:
+        who = "Admin" if m.get("role") == "user" else "You"
+        hist += f"\n{who}: {m.get('content', '')}"
+    composite = system_prompt + (("\n\nRECENT CONVERSATION:" + hist) if hist else "") + "\n\nADMIN MESSAGE:\n" + text
+    reply_raw, _ = await _nano_generate(composite, name=nano_name)
 
     parsed = _extract_json(reply_raw) or {}
     kind = str(parsed.get("kind") or "chat").lower().strip()

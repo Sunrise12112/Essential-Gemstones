@@ -225,3 +225,12 @@ Context: the Emergent claimable sandbox was UNLINKED by the user. Dead sandbox s
 - Removed: import stripe; whole Stripe block in server.py (checkout, status/catalog/webhook, connect/disconnect, products/orders/refunds/coupons CRUD, all helpers); frontend StripeProducts.jsx, PaymentSuccess.jsx, PaymentCancel.jsx + their routes; startProductCheckout in lib/api.js; Stripe Store link in admin; STRIPE_SETUP.md; test_stripe_nanoai_no_sms.py.
 - Buy model reverted to the simple per-product manual link: admin pastes any URL (Stripe/PayPal/Etsy/etc.) into the product "Buy link" field; Buy Now / Buy now opens it in a new tab. Blank = no Buy button ("Tap for details").
 - Verified: backend healthy, /api/stripe/catalog and /api/payments/checkout now 404; /api/site returns 2 products + nanoAI; frontend compiles (only pre-existing exhaustive-deps warning); homepage renders.
+
+## 2026-06 (5) — AI switched from Claude to Nano AI (owner's own API)
+- All three AI features now call the Nano REST API (POST https://nano-ai.org/functions/nano-api, x-api-key header, name + model fields) instead of Claude/Emergent LLM.
+- Config in backend/.env: NANO_API_KEY, NANO_API_URL, NANO_MODEL=claude_sonnet_4_6. Helper _nano_generate() (httpx, 90s timeout, friendly 401/403/timeout errors); _nano_name_from_request / _nano_admin_name supply Nano the person name (member fullName / admin username).
+- /api/chat/stream (Chat with Luca): calls Nano, streams the reply word-by-word over SSE (same event contract, no frontend change); persists meta.nanoChatId per session so Nano keeps thread memory.
+- /api/admin/ai (Admin AI): Nano-powered; still parses JSON actions (kind/reply). Chat works; EDIT actions are BEST-EFFORT/unreliable (Nano sometimes says it edited but returns applied=[]) — accepted tradeoff per user choice.
+- /api/admin/ai-edit (AI site editor): Nano reliably returns our JSON edit plan and applies it (verified: hero.kicker edit applied).
+- Removed emergentintegrations.llm.chat import/usage. EMERGENT_LLM_KEY still used for object storage only.
+- DEPLOY: add NANO_API_KEY (and NANO_API_URL, NANO_MODEL) to Deployment -> Secrets so live site uses Nano. Nano API needs the Max plan (403 otherwise). Verified all 3 in preview.
