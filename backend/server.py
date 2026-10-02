@@ -662,8 +662,80 @@ def default_site() -> dict:
             "quote": "\u201cThank you from the bottom of my heart.\u201d \u2014 Luca",
             "socials": {"instagram": "#", "facebook": "#"},
         },
-        "sectionOrder": ["hero", "products", "story", "promise", "chakra", "stats", "lavaMeaning", "founder", "craft", "faq", "gallery", "vip", "nanoAI"],
-        "sectionVisibility": {k: True for k in ["hero", "products", "story", "promise", "chakra", "stats", "lavaMeaning", "founder", "craft", "faq", "gallery", "vip", "nanoAI"]},
+        "quiz": {
+            "kicker": "Test Your Knowledge",
+            "title": "The Gemstone Benefits Quiz",
+            "subtitle": "Learn the meaning and benefits behind every stone \u2014 one question at a time.",
+            "retryLabel": "Try Again",
+            "questions": [
+                {
+                    "gem": "Lava Stone", "color": "#a8473d",
+                    "q": "Lava stone is the heart of every Essential Gemstones bracelet. Why does it hold essential oils so well?",
+                    "options": ["Its shiny surface traps oils", "Its porous, volcanic texture absorbs and slowly releases oils", "It is magnetic and attracts oil molecules", "It is coated in natural plant extracts"],
+                    "answer": 1,
+                    "feedback": "Lava stone forms from cooled volcanic lava, leaving it full of tiny pores that soak up essential oils like a natural diffuser \u2014 so you can carry a calming, grounding scent all day."
+                },
+                {
+                    "gem": "Lava Stone", "color": "#a8473d",
+                    "q": "What is the best way to use essential oils with your lava stone bracelet?",
+                    "options": ["Soak the whole bracelet in oil overnight", "Add 1\u20132 drops to the lava beads and let it absorb", "Spray perfume over the beads", "Boil the beads in oil"],
+                    "answer": 1,
+                    "feedback": "Just place one or two drops of your favourite oil on the porous lava beads, give it a moment to absorb, and enjoy hours of subtle, natural aromatherapy."
+                },
+                {
+                    "gem": "Red Jasper", "color": "#a8473d",
+                    "q": "Red Jasper sits at the base of the 7 Chakra bracelet. Which chakra does it align with?",
+                    "options": ["Crown Chakra", "Throat Chakra", "Root Chakra", "Third Eye Chakra"],
+                    "answer": 2,
+                    "feedback": "Red Jasper anchors the Root Chakra \u2014 grounding your spirit to the earth and bringing strength and a sense of security."
+                },
+                {
+                    "gem": "Tiger's Eye", "color": "#b07a3a",
+                    "q": "What quality is Tiger's Eye best known for bringing?",
+                    "options": ["Deep sleep", "Confidence, courage and personal power", "Better digestion", "Waterproofing"],
+                    "answer": 1,
+                    "feedback": "Tiger's Eye ignites your inner fire \u2014 boosting confidence, courage and the personal power to pursue what you truly want."
+                },
+                {
+                    "gem": "Turquoise", "color": "#3a8a96",
+                    "q": "Turquoise is tied to which energy centre?",
+                    "options": ["Heart Chakra", "Throat Chakra", "Sacral Chakra", "Root Chakra"],
+                    "answer": 1,
+                    "feedback": "Turquoise empowers the Throat Chakra \u2014 helping you speak your truth with clarity, calm and honest communication."
+                },
+                {
+                    "gem": "Lapis Lazuli", "color": "#2b4a8c",
+                    "q": "Lapis Lazuli is chosen to support which of these?",
+                    "options": ["Intuition and inner wisdom", "Physical speed", "Appetite", "Night vision"],
+                    "answer": 0,
+                    "feedback": "Lapis Lazuli awakens the Third Eye \u2014 deepening intuition, clarity and insight to guide you toward understanding."
+                },
+                {
+                    "gem": "Amethyst", "color": "#7a4f9c",
+                    "q": "Amethyst crowns the 7 Chakra bracelet. What does it represent?",
+                    "options": ["Hunger and energy", "Higher consciousness and spiritual protection", "Strength and muscle", "Speed and reflexes"],
+                    "answer": 1,
+                    "feedback": "Amethyst connects you to higher consciousness and spiritual protection \u2014 bringing peace and purifying your aura."
+                },
+                {
+                    "gem": "Lava Stone", "color": "#a8473d",
+                    "q": "In crystal lore, what does lava stone most symbolise?",
+                    "options": ["Luck with money", "Transformation \u2014 moving through fire and emerging stronger", "Cold and stillness", "Invisibility"],
+                    "answer": 1,
+                    "feedback": "Born in fire and cooled into solid stone, lava represents profound transformation \u2014 the power to pass through hardship and emerge stronger and new."
+                },
+                {
+                    "gem": "Care", "color": "#6b4f3a",
+                    "q": "How should you care for your lava stone bracelet?",
+                    "options": ["Scrub it with soap and hot water daily", "Wipe gently with a soft damp cloth and avoid harsh chemicals", "Leave it soaking in water", "Polish it with bleach"],
+                    "answer": 1,
+                    "feedback": "Lava stone is durable but porous \u2014 wipe it with a soft, slightly damp cloth, avoid prolonged water and chemicals, and store it in its pouch."
+                }
+            ],
+        },
+        "customSections": [],
+        "sectionOrder": ["hero", "products", "story", "promise", "chakra", "stats", "lavaMeaning", "quiz", "founder", "craft", "faq", "gallery", "vip", "nanoAI"],
+        "sectionVisibility": {k: True for k in ["hero", "products", "story", "promise", "chakra", "stats", "lavaMeaning", "quiz", "founder", "craft", "faq", "gallery", "vip", "nanoAI"]},
     }
 
 
@@ -2541,8 +2613,42 @@ def _set_at_path(root: dict, path: str, value: Any) -> None:
             cur = arr[n]
 
 
+async def _ai_generate_image_url(prompt: str) -> str:
+    """Generate an image with OpenAI gpt-image-1, store it, and return a servable /api/uploads URL."""
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=503, detail="Image generation is not configured")
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Missing image prompt")
+    from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
+    gen = OpenAIImageGeneration(api_key=EMERGENT_LLM_KEY)
+    try:
+        images = await gen.generate_images(prompt=prompt, model="gpt-image-1", number_of_images=1)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("AI image generation failed")
+        raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}")
+    if not images:
+        raise HTTPException(status_code=502, detail="No image was generated")
+    data = images[0]
+    name = f"{uuid.uuid4().hex}.png"
+    storage_path = f"{STORAGE_PREFIX}/{name}"
+    await asyncio.to_thread(_storage_put, storage_path, data, "image/png")
+    await db.media.insert_one({
+        "_id": name,
+        "storagePath": storage_path,
+        "originalFilename": f"ai-generated-{name}",
+        "contentType": "image/png",
+        "kind": "image",
+        "size": len(data),
+        "createdAt": datetime.utcnow().isoformat(),
+        "aiPrompt": prompt[:500],
+    })
+    return f"/api/uploads/{name}"
+
+
 @app.post("/api/admin/ai-edit")
 async def ai_edit_site(payload: AIEditIn, admin: dict = Depends(require_admin)) -> dict:
+    require_super(admin)
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=503, detail="AI is not configured")
     text = (payload.message or "").strip()
@@ -2633,6 +2739,7 @@ async def ai_edit_site(payload: AIEditIn, admin: dict = Depends(require_admin)) 
 
 @app.post("/api/admin/ai-edit/undo")
 async def ai_edit_undo(payload: AIUndoIn, admin: dict = Depends(require_admin)) -> dict:
+    require_super(admin)
     snap = payload.snapshot or {}
     if not isinstance(snap, dict) or not snap:
         raise HTTPException(status_code=400, detail="Missing snapshot")
@@ -2849,47 +2956,69 @@ def _unified_admin_prompt(site_json: str, subscriber_count: int, admins_json: st
         "Never refer to Luca as she/her/they. Never lead descriptions of Luca with his age.\n\n"
         "OUTPUT FORMAT: Reply with ONLY a single JSON object (no prose outside JSON, no code fences). Exact shape:\n"
         "{\n"
-        '  "kind": "chat" | "edit" | "preview" | "email" | "admins",\n'
+        '  "kind": "chat" | "edit" | "preview" | "email" | "admins" | "image",\n'
         '  "reply": "<what to show the admin>",\n'
         '  "edits": [ {"path": "<dotted path>", "value": <new value>} ],\n'
+        '  "generateImages": [ {"prompt": "<image description>", "path": "<dotted path to set the resulting URL>"} ],\n'
+        '  "imagePrompt": "<description>",   // only when kind=image and there is no placement yet\n'
         '  "preview": { "section": "hero"|"products"|"faq"|"about"|"story"|"founder"|"members"|"chakra"|"full", "note": "<what to look at>" },\n'
         '  "email": { "subject": "<subject line>", "html": "<well-formatted HTML body>", "to": <recipients> },\n'
         '  "admins": { "action": "...", ... }\n'
         "}\n"
-        "Only include 'edits' when kind='edit'. Only include 'preview' when kind='preview'. Only include 'email' "
-        "when kind='email'. Only include 'admins' when kind='admins'. 'reply' is ALWAYS required.\n\n"
+        "Only include 'edits'/'generateImages' when kind='edit'. Only include 'imagePrompt' when kind='image'. "
+        "Only include 'preview' when kind='preview'. Only include 'email' when kind='email'. Only include 'admins' when kind='admins'. 'reply' is ALWAYS required.\n\n"
         "WHEN TO PICK EACH kind:\n"
         "- 'chat'  \u2192 the admin is asking a question, brainstorming, or wants you to draft copy without applying it. "
         "Put the draft or answer in 'reply'.\n"
-        "- 'edit'  \u2192 the admin wants a live change to the website (hero, products, FAQ, colors of copy, section order, "
-        "visibility, footer, etc.). Fill 'edits' with MINIMAL, TARGETED paths and put a one-sentence summary in 'reply'.\n"
-        "- 'preview' \u2192 the admin wants to SEE something on the site (e.g. 'show me the hero', 'what does the products "
-        "section look like right now?', 'let me see the FAQ', 'preview the footer'). Set preview.section to one of "
-        "'hero','products','faq','about','story','founder','members','chakra', or 'full' for the whole page. "
-        "Use preview.note to point out what they should notice. Also pick 'preview' when the admin asks you to preview "
-        "a change you just made or want to make.\n"
-        "- 'email' \u2192 the admin wants an email drafted and (after they confirm) sent. Write a real, warm HTML email "
-        "in 'email.html' using inline styles suitable for email clients. Choose 'email.to' based on the audience the "
-        "admin describes:\n"
+        "- 'edit'  \u2192 the admin wants ANY live change to the website. You can edit, add, delete, reorder or restyle "
+        "ANYTHING: hero, products, FAQ, copy, buttons/links, section order, visibility, footer, the quiz, and brand-new "
+        "custom sections. Fill 'edits' with targeted paths and put a one-sentence summary in 'reply'.\n"
+        "- 'image' \u2192 the admin wants you to GENERATE an image but hasn't said where it goes yet. Put the full visual "
+        "description in 'imagePrompt'. (If they DO say where it goes, use kind='edit' with 'generateImages' instead.)\n"
+        "- 'preview' \u2192 the admin wants to SEE a section of the live site. Set preview.section and use preview.note.\n"
+        "- 'email' \u2192 the admin wants an email drafted and (after they confirm) sent. Write real warm HTML in 'email.html' "
+        "with inline styles. Choose 'email.to':\n"
         f"    * \"subscribers\" (default) \u2013 every newsletter subscriber (current count: {subscriber_count}).\n"
         "    * \"members\" \u2013 every signed-up member/user account.\n"
         "    * \"admins\" \u2013 every admin account with an email on file.\n"
         "    * \"all\" \u2013 union of subscribers + members + admins.\n"
-        "    * A JSON list of specific email addresses \u2013 for one-off messages, e.g. [\"friend@example.com\"].\n"
-        "    * A single email address string \u2013 for messaging one specific person.\n"
-        "  Put a short confirmation in 'reply' like 'Draft ready. Say send it to email <audience>.' The admin will "
-        "review the recipients + copy before it actually goes out. If the admin says 'send an email to <name>' but "
-        "hasn\u2019t given an address, ASK for the address in 'reply' with kind='chat'.\n"
+        "    * A JSON list of specific email addresses, or a single email string.\n"
+        "  Put a short confirmation in 'reply'. If an address is missing, ASK for it with kind='chat'.\n"
         + admins_action_doc +
         "\nEDIT PATH SYNTAX:\n"
         "- Dot notation to descend into objects. Bracket [n] to select an array index. "
         "Example: products.items[0].description, sectionVisibility.faq, sectionOrder.\n"
         "- To replace an entire array, set path to the array key and value to the new array.\n"
+        "- To APPEND to an array, use the next index. Example: if customSections has 2 items, set customSections[2] to a new section object.\n"
         f"- Top-level keys you may edit: {schema_keys}.\n\n"
+        "IMAGES:\n"
+        "- You can create images on demand. In an 'edit', add a 'generateImages' entry with a vivid 'prompt' and the "
+        "'path' where the resulting image URL should be stored (e.g. hero.mediaUrl, products.items[0].image, or "
+        "customSections[2].blocks[0].src). The server generates the image and fills that path automatically.\n"
+        "- Match the brand: warm, earthy, natural light, volcanic stone, handmade bracelets, no text in the image.\n\n"
+        "CREATING WHOLE NEW SECTIONS (customSections):\n"
+        "- 'customSections' is an array of sections you can freely create, edit, delete and reorder. Each section:\n"
+        '  { "id": "<unique-kebab-id>", "title": "<internal name>", "bg": "light"|"dark"|"stone", "blocks": [ ... ] }\n'
+        "- A block is one of:\n"
+        '    { "type": "heading", "text": "...", "align": "left"|"center" }\n'
+        '    { "type": "kicker", "text": "..." }\n'
+        '    { "type": "paragraph", "text": "..." }\n'
+        '    { "type": "image", "src": "<url>", "alt": "...", "caption": "..." }\n'
+        '    { "type": "button", "label": "...", "href": "<url>", "style": "solid"|"outline" }\n'
+        '    { "type": "divider" }\n'
+        '    { "type": "embed", "html": "<safe inline HTML>" }\n'
+        "- After adding a section to 'customSections', ALSO add its id into 'sectionOrder' at the position the admin wants "
+        "(replace the whole sectionOrder array with the new order). New sections are visible by default; to hide one set "
+        "sectionVisibility.<id> = false.\n"
+        "- To DELETE a custom section, set 'customSections' to the new array without it AND remove its id from 'sectionOrder'.\n\n"
+        "THE QUIZ (quiz):\n"
+        "- 'quiz' has kicker, title, subtitle, retryLabel, and questions[]. Each question: "
+        '{ "gem": "...", "color": "#hex", "q": "...", "options": ["..."], "answer": <0-based index>, "feedback": "..." }. '
+        "You can add, edit, reorder or remove questions.\n\n"
         "RULES:\n"
-        "- Do EXACTLY what the admin asked \u2014 no more, no less. Do not rewrite unrelated fields.\n"
-        "- Preserve existing structure. Do not remove keys the site uses. Never invent fields the schema doesn't have.\n"
-        "- If the request is unsafe/impossible, set kind='chat' and explain in 'reply'.\n"
+        "- Do what the admin asked. You ARE allowed to add, delete and restructure anything \u2014 sections, buttons, images, the quiz.\n"
+        "- Keep valid structure. Give every new custom section and block sensible fields. Never invent fields on the FIXED sections that aren't already there.\n"
+        "- If the request is genuinely unsafe/impossible, set kind='chat' and explain in 'reply'.\n"
         "- Never expose passwordHash, twoFactorSecret, or backup codes verbatim.\n\n"
         "CURRENT SITE CONTENT (JSON):\n" + site_json
         + admins_block
@@ -2898,7 +3027,8 @@ def _unified_admin_prompt(site_json: str, subscriber_count: int, admins_json: st
 
 @app.post("/api/admin/ai")
 async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = Depends(require_admin)) -> dict:
-    """Single all-powerful admin AI. Auto-decides chat vs edit vs email broadcast."""
+    """Single all-powerful admin AI. Auto-decides chat vs edit vs email broadcast. Super admins only."""
+    require_super(admin)
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=503, detail="AI is not configured")
     text = (payload.message or "").strip()
@@ -3020,6 +3150,29 @@ async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = D
                 applied.append({"path": path, "value": e.get("value")})
             except Exception as exc:  # noqa: BLE001
                 failed.append({"edit": e, "reason": str(exc)})
+        # Generate any requested images and place them at the given paths
+        gen_images = parsed.get("generateImages") or []
+        if isinstance(gen_images, list):
+            for g in gen_images:
+                if not isinstance(g, dict):
+                    continue
+                gp = str(g.get("prompt") or "").strip()
+                gpath = str(g.get("path") or "").strip()
+                if not gp or not gpath:
+                    failed.append({"edit": g, "reason": "image needs both prompt and path"})
+                    continue
+                gtop = gpath.split(".")[0].split("[")[0]
+                if gtop not in allowed:
+                    failed.append({"edit": g, "reason": f"top-level key '{gtop}' not editable"})
+                    continue
+                try:
+                    url = await _ai_generate_image_url(gp)
+                    _set_at_path(updated, gpath, url)
+                    applied.append({"path": gpath, "value": url})
+                except HTTPException as exc:
+                    failed.append({"edit": g, "reason": exc.detail})
+                except Exception as exc:  # noqa: BLE001
+                    failed.append({"edit": g, "reason": str(exc)})
         if applied:
             update_doc = {k: v for k, v in updated.items() if k in allowed}
             update_doc["updatedAt"] = datetime.utcnow().isoformat()
@@ -3029,6 +3182,24 @@ async def admin_ai_unified(payload: AdminAIIn, request: Request, admin: dict = D
         result["snapshot"] = snapshot
         if not reply_text:
             result["reply"] = f"Applied {len(applied)} change(s)." if applied else "No changes applied."
+
+    # --- Handle IMAGE generation (no placement; just return the image) ---
+    elif kind == "image":
+        img_prompt = str(parsed.get("imagePrompt") or parsed.get("prompt") or "").strip()
+        if not img_prompt:
+            result["kind"] = "chat"
+            result["reply"] = reply_text or "Tell me what image you'd like and I'll generate it."
+        else:
+            try:
+                url = await _ai_generate_image_url(img_prompt)
+                result["imageUrl"] = url
+                result["imagePrompt"] = img_prompt
+                if not reply_text:
+                    result["reply"] = "Here's your generated image. Tell me where to place it (e.g. 'use it as the hero image') and I'll add it to the site."
+            except HTTPException as exc:
+                result["kind"] = "chat"
+                result["reply"] = f"Couldn't generate that image: {exc.detail}"
+
 
     # --- Handle EMAIL DRAFT (any recipients) ---
     elif kind == "email":
@@ -3186,6 +3357,7 @@ async def _resolve_email_audience(audience: Any) -> tuple[list[str], str]:
 async def admin_ai_send_broadcast(payload: AdminBroadcastIn, admin: dict = Depends(require_admin)) -> dict:
     """Confirm & send an admin-AI-drafted email. Recipients can be all newsletter subscribers,
     members, admins, everyone, or an explicit list of email addresses."""
+    require_super(admin)
     subject = (payload.subject or "").strip()
     html = (payload.html or "").strip()
     if not subject or not html:

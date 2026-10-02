@@ -26,6 +26,7 @@ const SECTION_LABELS = {
   gallery: 'Gallery',
   vip: 'VIP Membership',
   nanoAI: 'Meet Nano AI',
+  quiz: 'Benefits Quiz',
 };
 
 export default function AdminDashboard() {
@@ -148,7 +149,7 @@ export default function AdminDashboard() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setAiOpen(true)} className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-[#c9a876]/15 border border-[#c9a876]/40 text-[#c9a876] rounded-full hover:bg-[#c9a876]/25" title="Write with AI"><Sparkles className="w-4 h-4" /> <span className="hidden sm:inline">AI Writer</span></button>
+            {me?.isSuper && <button onClick={() => setAiOpen(true)} data-testid="admin-ai-open-btn" className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-[#c9a876]/15 border border-[#c9a876]/40 text-[#c9a876] rounded-full hover:bg-[#c9a876]/25" title="Admin AI assistant"><Sparkles className="w-4 h-4" /> <span className="hidden sm:inline">Admin AI</span></button>}
             <Link to="/" target="_blank" className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-[#3d2f24] rounded-full hover:bg-[#241b15]"><Eye className="w-4 h-4" /> View site</Link>
             <button onClick={save} disabled={saving} className="inline-flex items-center gap-2 px-5 py-2 bg-[#c9a876] text-[#1a1410] rounded-full text-sm font-medium hover:bg-[#d6b885] disabled:opacity-60">
               {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save changes
@@ -638,6 +639,52 @@ export default function AdminDashboard() {
         </SectionCard>
         )}
 
+        {/* Benefits Quiz */}
+        {can('quiz') && (
+        <SectionCard title="Benefits Quiz" open={openSections.quiz} onToggle={() => toggle('quiz')}>
+          <div className="grid sm:grid-cols-2 gap-4">
+            <Field label="Kicker"><TextInput value={data.quiz?.kicker} onChange={(v) => update(['quiz','kicker'], v)} /></Field>
+            <Field label="Retry button label"><TextInput value={data.quiz?.retryLabel} onChange={(v) => update(['quiz','retryLabel'], v)} placeholder="Try Again" /></Field>
+          </div>
+          <Field label="Title"><TextInput value={data.quiz?.title} onChange={(v) => update(['quiz','title'], v)} /></Field>
+          <Field label="Subtitle"><TextArea value={data.quiz?.subtitle} onChange={(v) => update(['quiz','subtitle'], v)} rows={2} /></Field>
+          <Field label="Questions">
+            <ListReorder
+              items={data.quiz?.questions || []}
+              onMove={(idx, d) => { const arr=[...(data.quiz?.questions||[])]; const j=idx+d; if(j<0||j>=arr.length) return; [arr[idx],arr[j]]=[arr[j],arr[idx]]; update(['quiz','questions'], arr); }}
+              onRemove={(idx) => update(['quiz','questions'], (data.quiz?.questions||[]).filter((_,x) => x !== idx))}
+              onAdd={() => update(['quiz','questions'], [...(data.quiz?.questions||[]), { gem: 'New Stone', color: '#6b4f3a', q: '', options: ['', '', '', ''], answer: 0, feedback: '' }])}
+              addLabel="Add question"
+              renderItem={(qq, idx) => {
+                const setQ = (patch) => { const a=[...(data.quiz?.questions||[])]; a[idx]={...a[idx],...patch}; update(['quiz','questions'],a); };
+                const setOpt = (oi, val) => { const opts=[...(qq.options||[])]; opts[oi]=val; setQ({ options: opts }); };
+                return (
+                  <div className="space-y-2">
+                    <div className="grid sm:grid-cols-2 gap-2">
+                      <TextInput value={qq.gem} placeholder="Stone / badge (e.g. Lava Stone)" onChange={(v) => setQ({ gem: v })} />
+                      <TextInput value={qq.color} placeholder="Badge colour (#a8473d)" onChange={(v) => setQ({ color: v })} />
+                    </div>
+                    <TextArea value={qq.q} placeholder="Question text" rows={2} onChange={(v) => setQ({ q: v })} />
+                    <div className="space-y-1.5">
+                      {(qq.options || []).map((opt, oi) => (
+                        <div key={oi} className="flex items-center gap-2">
+                          <input type="radio" name={`quiz-ans-${idx}`} checked={qq.answer === oi} onChange={() => setQ({ answer: oi })} title="Mark correct answer" className="shrink-0" data-testid={`quiz-edit-answer-${idx}-${oi}`} />
+                          <div className="flex-1"><TextInput value={opt} placeholder={`Option ${oi + 1}`} onChange={(v) => setOpt(oi, v)} /></div>
+                          <button type="button" onClick={() => { const opts=(qq.options||[]).filter((_,x)=>x!==oi); const ans=qq.answer>oi?qq.answer-1:qq.answer; setQ({ options: opts, answer: Math.max(0, Math.min(ans, opts.length-1)) }); }} className="text-[#8b6b4f] hover:text-red-700 shrink-0" title="Remove option"><X className="w-4 h-4" /></button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => setQ({ options: [...(qq.options||[]), ''] })} className="text-xs text-[#6b4f3a] underline">+ Add option</button>
+                    </div>
+                    <p className="text-[11px] text-[#8b6b4f]">Select the radio next to the correct answer.</p>
+                    <TextArea value={qq.feedback} placeholder="Feedback shown after answering" rows={2} onChange={(v) => setQ({ feedback: v })} />
+                  </div>
+                );
+              }}
+            />
+          </Field>
+        </SectionCard>
+        )}
+
         {/* Footer */}
         {can('footer') && (
         <SectionCard title="Footer & Contact" open={openSections.footer} onToggle={() => toggle('footer')}>
@@ -675,7 +722,7 @@ export default function AdminDashboard() {
           </button>
         </div>
       </main>
-      <AIWriter open={aiOpen} onClose={() => setAiOpen(false)} />
+      <AIWriter open={aiOpen && me?.isSuper} onClose={() => setAiOpen(false)} />
     </div>
   );
 }

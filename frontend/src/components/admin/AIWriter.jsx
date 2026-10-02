@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Sparkles, X, Send, Loader2, ClipboardCheck, Undo2, History, Plus, Trash2, Pencil, Check, Mail, Wand2, MessageSquare, Users, Eye, ExternalLink } from 'lucide-react';
+import { Sparkles, X, Send, Loader2, ClipboardCheck, Undo2, History, Plus, Trash2, Pencil, Check, Mail, Wand2, MessageSquare, Users, Eye, ExternalLink, Image as ImageIcon } from 'lucide-react';
 import api, { API } from '../../lib/api';
 import { useToast } from '../../hooks/use-toast';
 import { useSite } from '../../context/SiteContext';
@@ -23,6 +23,7 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
   const bodyRef = useRef(null);
   const { toast } = useToast();
   const { refresh } = useSite();
+  const backendBase = (process.env.REACT_APP_BACKEND_URL || '').replace(/\/$/, '');
 
   const loadSessions = useCallback(async () => {
     try {
@@ -85,6 +86,8 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
         emailDraft: data.emailDraft || null,
         adminAction: data.adminAction || null,
         preview: data.preview || null,
+        imageUrl: data.imageUrl || null,
+        imagePrompt: data.imagePrompt || null,
       };
       setMessages((s) => {
         const list = [...s];
@@ -211,8 +214,8 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
 
   if (!open) return null;
 
-  const kindIcon = (k) => k === 'edit' ? <Wand2 className="w-3 h-3" /> : k === 'email' ? <Mail className="w-3 h-3" /> : k === 'admins' ? <Users className="w-3 h-3" /> : k === 'preview' ? <Eye className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />;
-  const kindLabel = (k) => k === 'edit' ? 'Site edit' : k === 'email' ? 'Email draft' : k === 'admins' ? 'Admin action' : k === 'preview' ? 'Site preview' : 'Reply';
+  const kindIcon = (k) => k === 'edit' ? <Wand2 className="w-3 h-3" /> : k === 'email' ? <Mail className="w-3 h-3" /> : k === 'admins' ? <Users className="w-3 h-3" /> : k === 'preview' ? <Eye className="w-3 h-3" /> : k === 'image' ? <ImageIcon className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />;
+  const kindLabel = (k) => k === 'edit' ? 'Site edit' : k === 'email' ? 'Email draft' : k === 'admins' ? 'Admin action' : k === 'preview' ? 'Site preview' : k === 'image' ? 'Generated image' : 'Reply';
 
   return (
     <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-[#1a1410]/60 backdrop-blur-sm">
@@ -348,6 +351,19 @@ export default function AIWriter({ open, onClose, onInsert, hint = '' }) {
                 {/* Preview: iframe showing a live section of the site */}
                 {m.role === 'assistant' && m.kind === 'preview' && m.preview && (
                   <PreviewCard preview={m.preview} index={i} />
+                )}
+
+                {/* Image: show the generated image with a copy-URL action */}
+                {m.role === 'assistant' && m.kind === 'image' && m.imageUrl && (
+                  <div className="mt-3 pt-3 border-t border-[#e8dfd1] space-y-2" data-testid={`admin-ai-image-${i}`}>
+                    <img src={`${backendBase}${m.imageUrl}`} alt={m.imagePrompt || 'Generated image'} className="w-full rounded-xl border border-[#e8dfd1]" />
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => copyToClipboard(m.imageUrl, i)} className="text-xs px-3 py-1.5 rounded-full border border-[#e8dfd1] text-[#3d3128] hover:bg-[#faf6f0] inline-flex items-center gap-1">
+                        {copied === i ? <><ClipboardCheck className="w-3 h-3" /> Copied</> : 'Copy image URL'}
+                      </button>
+                      <span className="text-[11px] text-[#8b6b4f] self-center">Tell me where to place it and I'll add it to the site.</span>
+                    </div>
+                  </div>
                 )}
 
                 {/* Admin management: show what was done */}

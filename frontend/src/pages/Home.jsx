@@ -14,6 +14,8 @@ import FAQ from '../components/FAQ';
 import Gallery from '../components/Gallery';
 import VIP from '../components/VIP';
 import NanoAI from '../components/NanoAI';
+import Quiz from '../components/Quiz';
+import CustomSection from '../components/CustomSection';
 import Footer from '../components/Footer';
 import ChatBubble from '../components/chat/ChatBubble';
 
@@ -31,22 +33,31 @@ const REGISTRY = {
   gallery: Gallery,
   vip: VIP,
   nanoAI: NanoAI,
+  quiz: Quiz,
 };
 
 export default function Home() {
   const { site } = useSite();
+  const custom = Array.isArray(site.customSections) ? site.customSections : [];
+  const customMap = Object.fromEntries(custom.map((s) => [s.id, s]));
   const baseOrder = site.sectionOrder || Object.keys(REGISTRY);
-  // Append any registered sections missing from a saved order (e.g. newly added nanoAI)
-  const order = [...baseOrder, ...Object.keys(REGISTRY).filter((k) => !baseOrder.includes(k))];
+  // Append any registered sections or custom sections missing from a saved order.
+  const order = [
+    ...baseOrder,
+    ...Object.keys(REGISTRY).filter((k) => !baseOrder.includes(k)),
+    ...custom.map((s) => s.id).filter((id) => !baseOrder.includes(id)),
+  ];
   const vis = site.sectionVisibility || {};
   return (
     <div className="min-h-screen bg-[#faf6f0]">
       <Navbar />
       {order.map((key) => {
-        const C = REGISTRY[key];
-        if (!C) return null;
         if (vis[key] === false) return null;
-        return <C key={key} />;
+        const C = REGISTRY[key];
+        if (C) return <C key={key} />;
+        const cs = customMap[key];
+        if (cs) return <CustomSection key={key} section={cs} />;
+        return null;
       })}
       <Footer />
       <ChatBubble />
