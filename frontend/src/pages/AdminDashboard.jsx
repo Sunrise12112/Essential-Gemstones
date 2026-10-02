@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { LogOut, Save, Eye, RefreshCw, ChevronUp, ChevronDown, Users, ShieldCheck, Sparkles, Undo2, X } from 'lucide-react';
+import { LogOut, Save, Eye, RefreshCw, ChevronUp, ChevronDown, Users, ShieldCheck, Sparkles, Undo2, X, Download, Upload } from 'lucide-react';
 import api from '../lib/api';
 import { useSite } from '../context/SiteContext';
 import { useToast } from '../hooks/use-toast';
@@ -128,6 +128,41 @@ export default function AdminDashboard() {
     navigate('/admin');
   };
 
+  const exportSite = async () => {
+    try {
+      const { data: live } = await api.get('/site');
+      delete live._rejected;
+      const blob = new Blob([JSON.stringify(live, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `essential-gemstones-site-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: 'Exported', description: 'Downloaded a full backup of your site content.' });
+    } catch (err) {
+      toast({ title: 'Export failed', description: err?.response?.data?.detail || 'Try again.', variant: 'destructive' });
+    }
+  };
+
+  const importSite = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!window.confirm('Import this backup? It will overwrite the current site content on THIS environment.')) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      await api.post('/admin/site/import', { data: parsed });
+      await refresh();
+      setData(null); // re-seed editor from freshly imported content
+      toast({ title: 'Restored', description: 'Site content imported successfully.' });
+    } catch (err) {
+      const detail = err?.response?.data?.detail || (err instanceof SyntaxError ? 'That file is not valid JSON.' : 'Try again.');
+      toast({ title: 'Import failed', description: detail, variant: 'destructive' });
+    }
+  };
+
   // Section order
   const moveSection = (idx, dir) => {
     const order = [...(data.sectionOrder || [])];
@@ -149,6 +184,8 @@ export default function AdminDashboard() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {me?.isSuper && <button onClick={exportSite} data-testid="admin-export-btn" className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-[#3d2f24] rounded-full hover:bg-[#241b15]" title="Download a backup of all site content"><Download className="w-4 h-4" /> <span className="hidden sm:inline">Export</span></button>}
+            {me?.isSuper && <label data-testid="admin-import-btn" className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-[#3d2f24] rounded-full hover:bg-[#241b15] cursor-pointer" title="Restore site content from a backup file"><Upload className="w-4 h-4" /> <span className="hidden sm:inline">Import</span><input type="file" accept="application/json,.json" onChange={importSite} className="hidden" /></label>}
             {me?.isSuper && <button onClick={() => setAiOpen(true)} data-testid="admin-ai-open-btn" className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-[#c9a876]/15 border border-[#c9a876]/40 text-[#c9a876] rounded-full hover:bg-[#c9a876]/25" title="Admin AI assistant"><Sparkles className="w-4 h-4" /> <span className="hidden sm:inline">Admin AI</span></button>}
             <Link to="/" target="_blank" className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-[#3d2f24] rounded-full hover:bg-[#241b15]"><Eye className="w-4 h-4" /> View site</Link>
             <button onClick={save} disabled={saving} className="inline-flex items-center gap-2 px-5 py-2 bg-[#c9a876] text-[#1a1410] rounded-full text-sm font-medium hover:bg-[#d6b885] disabled:opacity-60">

@@ -1289,6 +1289,26 @@ async def update_site(payload: dict, admin: dict = Depends(require_admin)) -> di
     return out
 
 
+class SiteImportIn(BaseModel):
+    data: dict
+
+
+@app.post("/api/admin/site/import")
+async def import_site(payload: SiteImportIn, admin: dict = Depends(require_admin)) -> dict:
+    """Super-admin: overwrite the whole site content from an exported JSON backup (restore)."""
+    require_super(admin)
+    incoming = payload.data or {}
+    if not isinstance(incoming, dict):
+        raise HTTPException(status_code=400, detail="Invalid backup: expected a JSON object")
+    allowed = set(default_site().keys())
+    doc = {k: v for k, v in incoming.items() if k in allowed}
+    if not doc:
+        raise HTTPException(status_code=400, detail="No valid site fields found in the uploaded backup")
+    doc["updatedAt"] = datetime.utcnow().isoformat()
+    await db.site.update_one({"_id": "main"}, {"$set": doc}, upsert=True)
+    return await get_site_doc()
+
+
 # ---- uploads (persistent object storage) ---- #
 
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
