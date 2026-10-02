@@ -3000,13 +3000,18 @@ def _unified_admin_prompt(site_json: str, subscriber_count: int, admins_json: st
         "- 'customSections' is an array of sections you can freely create, edit, delete and reorder. Each section:\n"
         '  { "id": "<unique-kebab-id>", "title": "<internal name>", "bg": "light"|"dark"|"stone", "blocks": [ ... ] }\n'
         "- A block is one of:\n"
-        '    { "type": "heading", "text": "...", "align": "left"|"center" }\n'
-        '    { "type": "kicker", "text": "..." }\n'
-        '    { "type": "paragraph", "text": "..." }\n'
+        '    { "type": "kicker", "text": "SHORT EYEBROW" }\n'
+        '    { "type": "heading", "text": "...", "align": "center"|"left" }\n'
+        '    { "type": "paragraph", "text": "...", "align": "center"|"left" }\n'
+        '    { "type": "quote", "text": "...", "author": "..." }\n'
         '    { "type": "image", "src": "<url>", "alt": "...", "caption": "..." }\n'
         '    { "type": "button", "label": "...", "href": "<url>", "style": "solid"|"outline" }\n'
         '    { "type": "divider" }\n'
         '    { "type": "embed", "html": "<safe inline HTML>" }\n'
+        "- MAKE NEW SECTIONS LOOK LIKE THE REST OF THE SITE: start every new section with a 'kicker' block (a short "
+        "uppercase eyebrow), then a 'heading' block, then a 'paragraph' subtitle \u2014 exactly like the brand's other "
+        "sections. Alternate 'bg' between 'light', 'stone' and 'dark' so sections don't blend into their neighbours. "
+        "Use 'quote' blocks for testimonials. Keep the warm, earthy, grounded brand voice.\n"
         "- After adding a section to 'customSections', ALSO add its id into 'sectionOrder' at the position the admin wants "
         "(replace the whole sectionOrder array with the new order). New sections are visible by default; to hide one set "
         "sectionVisibility.<id> = false.\n"
