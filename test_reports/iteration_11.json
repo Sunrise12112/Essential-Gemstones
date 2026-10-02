@@ -1,0 +1,24 @@
+{
+  "summary": "Full backend + frontend regression for new super-admin-gated Admin AI (chat/edit/image), Benefits Quiz, and custom sections. 11/11 backend pytest pass. Frontend: Quiz 9 questions + feedback + score + restart all work (data-testids present and correct). Admin AI button is visible to super admin, opens panel, created a new 'Care Tips' custom section via NL prompt and it rendered on public home via [data-testid^=custom-section-] (id custom-section-care-tips). AI image generation (gpt-image-1) returned a servable image in ~30s shown with [data-testid^=admin-ai-image-]. Quiz editor in dashboard: edited quiz.title, Save all changes propagated to public /#quiz [data-testid=quiz-title]. 401 for anon and 403/401 for member-token verified on /api/admin/ai, /api/admin/ai-edit, /api/admin/ai-edit/undo, /api/admin/ai/email/send. Test custom section was cleaned up via PUT /api/site; quiz title restored.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_admin_ai_super_gating.py",
+    "/app/test_reports/pytest/pytest_super_gating.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "default_site quiz questions use key 'q' and 'answer', while the AI edit guidance comments mention 'question' and 'correctIndex'. Pick one schema and align the AI prompt docs so AI-generated quiz edits stay consistent.",
+    "server.py is now ~3380 lines and growing — splitting admin/ai, admin/site, auth into routers would ease review.",
+    "No explicit non-super admin frontend test was executable because creating a non-super admin with 2FA via UI is heavy; the hidden-when-not-super guard was verified by reading me?.isSuper gating in AdminDashboard.jsx and the backend 401 case through unauth requests. Consider seeding a non-super admin for test harnesses.",
+    "/api/admin/ai edit returns a 'snapshot' field that the UI's Undo flow depends on; keep this contract stable."
+  ],
+  "updated_files": ["/app/backend/tests/test_admin_ai_super_gating.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "master / 1121211221 + TOTP IVQKJZDYWPOQ4ZAXNKMNU22TQ5N5DL7U (per /app/memory/test_credentials.md)",
+  "seed_data_creation": "Member TEST_super_gate_*@example.com created transiently in backend tests for 403 verification; one AI-created custom section ('care-tips') was created in UI test and removed afterwards via PUT /api/site. Quiz title was restored.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression file: /app/backend/tests/test_admin_ai_super_gating.py. Login: POST /api/admin/login then /api/admin/2fa/login (twoFactorToken MUST be in both JSON body and Authorization: Bearer header). Quiz questions schema uses keys {q, options, answer, gem, color, kicker, title}. Admin AI endpoints are require_super gated — a plain admin token still 403s. /api/admin/ai kind='edit' returns {applied, failed, snapshot, summary}; /api/admin/ai-edit/undo requires body {snapshot}. Image generation via kind='image' takes 20-60s and returns {kind:'image', images:[...], text}. The AIWriter component renders images with data-testid admin-ai-image-N. Custom sections render on public home with data-testid=custom-section-<id>.",
+  "rca of the issue": "N/A — no regressions."
+}

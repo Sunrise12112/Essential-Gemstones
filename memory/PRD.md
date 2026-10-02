@@ -1,5 +1,12 @@
 # Essential Gemstones — PRD
 
+> **2026-06 update (Admin AI superpowers + Benefits Quiz)**:
+> - **Admin AI is now SUPER-ADMIN ONLY.** `/api/admin/ai`, `/api/admin/ai-edit`, `/api/admin/ai-edit/undo`, `/api/admin/ai/email/send` all call `require_super`. The "Admin AI" button in AdminDashboard is hidden unless `me.isSuper`.
+> - **Admin AI can now edit/add/delete ANYTHING**, including brand-new **custom sections** (`customSections[]` in site data; blocks: heading/kicker/paragraph/image/button/divider/embed) rendered by `CustomSection.jsx` and ordered via `sectionOrder`. The AI can also **generate images** (OpenAI `gpt-image-1` via Emergent LLM key → `_ai_generate_image_url` → object storage → `/api/uploads/{name}`): `kind:'edit'` with `generateImages:[{prompt,path}]` to place them, or `kind:'image'` to just create one (shown in AIWriter with data-testid `admin-ai-image-N`).
+> - **Benefits Quiz** added as a new section (`quiz` in site data, 9 questions from gemstone/chakra content, earthy-themed `Quiz.jsx`). Editable in the admin panel (Benefits Quiz SectionCard). Question schema: `{gem, color, q, options[], answer(0-based), feedback}`.
+> - Verified 100% backend + frontend (test_reports/iteration_11.json). Backend regression: `/app/backend/tests/test_admin_ai_super_gating.py`.
+
+
 > **2026-06 update**: Added clickable "Built by Nano AI" credit (links to nano-ai.org) to all AI surfaces — customer chat widget (`ChatBubble.jsx`), and the Admin AI panel/site editor (`AIWriter.jsx`).
 > **2026-06 update (chat spacing fix)**: Member chat was rendering words with no spaces between them. Root cause: the SSE parser in `ChatBubble.jsx` did `.trim()` on every `data:` line, stripping the word-separating leading space. Fixed to strip only a single leading space (`replace(/^ /, '')`) per the SSE spec. Verified live via member chat.
 > **2026-06 update (revert)**: Per user, the AI provider was reverted from Nano AI back to **Claude (`claude-sonnet-4-5` via Emergent LLM / emergentintegrations)** for all three AI features (customer chat, admin AI, AI site editor). The "Built by Nano AI" branding labels and the homepage "Meet Nano AI" section are KEPT for display, but the actual chat/edit generation now runs on Claude again. All Nano REST (`_nano_generate`, `NANO_API_*`) code removed from `server.py`. Added "Regenerate Backup Codes" button in Admin → Manage Admins (own row, 2FA-gated).
