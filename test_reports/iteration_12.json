@@ -1,0 +1,19 @@
+{
+  "summary": "Targeted frontend regression for reported bug: 'AI delete section comes back after Save all changes'. Executed full flow via browser automation on the preview URL. Logged in as master+TOTP, opened Admin AI, (1) asked AI to ADD a custom section my-dog (confirmed server-side: customSections=['my-dog']), (2) asked AI to DELETE it (customSections=[]), (3) clicked 'Save all changes' and confirmed the deletion persisted (customSections=[] and no [data-testid=custom-section-my-dog] on public home). Also verified AI hide of built-in 'Meet the Founder' section persisted through Save (sectionVisibility.founder=false), then AI-restore and Save returned it to visible. Finally verified non-AI editing: changed hero.titleLine1 via a text input and Save persisted it. Original hero title restored at the end. The eg:ai-edit / eg:ai-edit-undone listeners in AdminDashboard.jsx that reset local editor data (setData(null)) correctly prevent stale Save from reintroducing AI-deleted sections.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "AdminDashboard.jsx eg:ai-edit handler correctly sets setData(null) so the useEffect re-seeds from fresh site; relies on refresh() having completed in AIWriter before the event is dispatched (await refresh() precedes dispatchEvent on line ~98-102 — good).",
+    "server.py continues to grow (~3380+ lines); consider splitting routers (admin/ai, admin/site, auth)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only test)", "frontend": "100%"},
+  "test_credentials": "master / 1121211221 + TOTP IVQKJZDYWPOQ4ZAXNKMNU22TQ5N5DL7U",
+  "seed_data_creation": "Transient custom section 'my-dog' created and then deleted via AI during the test. No residual data; hero.titleLine1 modified and restored to original.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regression validated: AdminDashboard listens for window 'eg:ai-edit' and 'eg:ai-edit-undone' events dispatched by AIWriter.jsx after AI edits/undos, and calls setData(null) so the editor re-seeds from the refreshed site. This prevents Save from pushing stale editor state that would re-add AI-deleted sections. Public custom section testids follow 'custom-section-<id>'. The site PUT contract preserves customSections + sectionOrder correctly.",
+  "rca of the issue": "RCA (already fixed by main agent): After AI edited the 'site' document in Mongo, AdminDashboard's local `data` state still held the pre-edit snapshot. Clicking 'Save all changes' PUT /api/site with that stale `data`, overwriting the AI's change (e.g. re-inserting the removed customSections entry). Fix: AIWriter dispatches window CustomEvent 'eg:ai-edit' after `await refresh()`; AdminDashboard listens and does setData(null), which lets its seeding useEffect re-copy from the freshly refreshed site before any Save. Verified end-to-end — the previously regressing sequence (AI add → AI delete → Save) now leaves customSections empty both server-side and on the public home."
+}
