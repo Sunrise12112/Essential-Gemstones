@@ -42,8 +42,11 @@ export default function AdminDashboard() {
   const [undoing, setUndoing] = useState(false);
 
   useEffect(() => {
-    const onEdit = (e) => setLastAiEdit(e.detail || null);
-    const onUndone = () => setLastAiEdit(null);
+    // After an AI edit (or undo), the DB changed under us — drop the local editor
+    // copy so it re-seeds from the freshly refreshed site. Otherwise a later "Save"
+    // would push stale content back and silently undo the AI's change.
+    const onEdit = (e) => { setLastAiEdit(e.detail || null); setData(null); };
+    const onUndone = () => { setLastAiEdit(null); setData(null); };
     window.addEventListener('eg:ai-edit', onEdit);
     window.addEventListener('eg:ai-edit-undone', onUndone);
     return () => {
@@ -58,6 +61,7 @@ export default function AdminDashboard() {
     try {
       await api.post('/admin/ai-edit/undo', { snapshot: lastAiEdit.snapshot });
       await refresh();
+      setData(null);
       setLastAiEdit(null);
       toast({ title: 'Reverted', description: 'Site restored to the previous version.' });
     } catch (err) {
