@@ -1,0 +1,35 @@
+{
+  "summary": "Verified admin 2FA email-removal + SMS method + master->luca rename + phone-based admin management. 5/6 pytest tests pass. Frontend chooser correctly shows TOTP/SMS/Backup (no email, phoneHint ****1745), TOTP login lands on dashboard with Export/Import/Admin AI, and Manage Admins create+edit-phone flow works end-to-end. Did NOT call /api/admin/2fa/sms/send (per instructions). One backend validation gap found: AdminCreate accepts null/missing phone despite spec saying phone is required.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/admins", "issue": "AdminCreate model has phone: Optional[str] = None and accepts admin creation without phone (returned 200 with phone=null for payload lacking phone). Spec/UI label says 'Mobile phone (REQUIRED)'. Backend should reject with 422 when phone missing/empty."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_admin_sms_2fa.py",
+    "/app/test_reports/pytest/sms_2fa_results.xml"
+  ],
+  "action_items": [
+    "Make phone required in AdminCreate (Pydantic: phone: str with constr(min_length=1) or validator); currently backend silently accepts admins without phones, which breaks the premise that SMS 2FA is always available for new admins."
+  ],
+  "critical_code_review_comments": [
+    "AdminCreate.phone should not be Optional per the new design (SMS method depends on it).",
+    "/api/admin/admins supports PATCH for phone edits but not for other fields consistently — confirmed PATCH works for phone update (used by UI edit-phone pencil)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin_sms_2fa.py"
+  ],
+  "success_rate": {"backend": "83% (5/6)", "frontend": "100%"},
+  "test_credentials": "luca / 1121211221, TOTP IVQKJZDYWPOQ4ZAXNKMNU22TQ5N5DL7U, phone 7017871745 (restored).",
+  "seed_data_creation": "Created and DELETED: test_nophone (from backend validation test) and phonetest (frontend create/edit test). Final state: only luca remains. Luca's phone was briefly changed to 5559876543 by an incorrect UI parent-walk in the test script, then restored to 7017871745 via UI pencil edit — verified via GET /api/admin/admins.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests live in /app/backend/tests/test_admin_sms_2fa.py. Do NOT call /api/admin/2fa/sms/send — real SMS costs. Phone-edit UI testid pattern: admin-row-edit-phone-<id>, admin-row-phone-input-<id>, admin-row-phone-save-<id>. Admin update uses HTTP PATCH (PUT returns 405). Luca's id is 4a300b41-e856-4332-8f67-16f1b0a4d1d1 in this env.",
+  "rca of the issue": "Phone-required gap: AdminCreate declares phone as Optional[str]=None at /app/backend/server.py:104, and the create route (around line 1235) just normalizes None -> None without validation. Fix: change to `phone: str` + Pydantic validator that rejects empty strings after normalization, matching the required=true HTML attribute already present in AdminsManager.jsx."
+}

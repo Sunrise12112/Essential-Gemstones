@@ -1233,6 +1233,8 @@ async def create_admin(payload: AdminCreate, admin: dict = Depends(require_admin
     validate_password_strength(payload.password)
     email = str(payload.email).strip().lower() if payload.email else None
     phone = _normalize_phone(payload.phone) if payload.phone else None
+    if not phone or len(_normalize_phone(phone).lstrip("+")) < 10:
+        raise HTTPException(status_code=400, detail="A valid mobile phone is required so the admin can receive 2FA codes by text")
     existing = await db.admins.find_one({"username": username})
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
