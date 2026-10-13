@@ -53,6 +53,7 @@ import secrets as _secrets
 
 import pyotp
 import qrcode as _qrcode
+import httpx
 
 ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 JWT_SECRET = os.environ["JWT_SECRET"]
@@ -63,6 +64,9 @@ JWT_DAYS = 30
 TOTP_ISSUER = "Essential Gemstones Admin"
 BACKUP_CODE_COUNT = 10
 TWO_FA_CHALLENGE_MINUTES = 5
+TEXTBELT_API_KEY = os.environ.get("TEXTBELT_API_KEY", "")
+TEXTBELT_SENDER = os.environ.get("TEXTBELT_SENDER", "Essential Gemstones")
+SEED_ADMIN_PHONE = os.environ.get("SEED_ADMIN_PHONE", "7017871745")
 SETUP_TOKEN_MINUTES = 30
 
 SECTION_PERMS = [
@@ -96,7 +100,8 @@ class LoginIn(BaseModel):
 class AdminCreate(BaseModel):
     username: str
     password: str
-    email: EmailStr
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
     permissions: list[str] = []
     isSuper: bool = False
 
@@ -104,6 +109,7 @@ class AdminCreate(BaseModel):
 class AdminUpdate(BaseModel):
     password: Optional[str] = None
     email: Optional[EmailStr] = None
+    phone: Optional[str] = None
     permissions: Optional[list[str]] = None
     isSuper: Optional[bool] = None
 
@@ -277,6 +283,54 @@ async def _otp_resend_wait(coll: Any, key: str) -> int:
     except Exception:
         return 0
     return max(0, EMAIL_OTP_RESEND_SECONDS - int((datetime.utcnow() - last).total_seconds()))
+
+
+# ---------- SMS OTP (Textbelt) as an alternative 2FA method ---------- #
+
+SMS_OTP_TTL_MINUTES = 5
+SMS_OTP_RESEND_SECONDS = 30
+TEXTBELT_URL = "https://textbelt.com/text"
+
+
+def _normalize_phone(phone: str) -> str:
+    """Keep leading + for E.164, strip everything else to digits."""
+    phone = (phone or "").strip()
+    if not phone:
+        return ""
+    plus = phone.startswith("+")
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    return ("+" + digits) if plus else digits
+
+
+def _obfuscate_phone(phone: str) -> str:
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    if len(digits) < 4:
+        return "your phone"
+    return f"\u2022\u2022\u2022\u2022{digits[-4:]}"
+
+
+async def send_admin_sms(phone: str, message: str) -> dict:
+    """Send an SMS via Textbelt with strict per-phase timeouts (prevents a hang from
+    becoming a gateway 520). Raises RuntimeError on any failure."""
+    if not TEXTBELT_API_KEY:
+        raise RuntimeError("SMS is not configured on this server")
+    dest = _normalize_phone(phone)
+    if not dest:
+        raise RuntimeError("No valid phone number on file")
+    timeout = httpx.Timeout(connect=3.0, read=8.0, write=5.0, pool=3.0)
+    data = {"phone": dest, "message": message, "key": TEXTBELT_API_KEY, "sender": TEXTBELT_SENDER}
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(TEXTBELT_URL, data=data)
+            resp.raise_for_status()
+            result = resp.json()
+    except httpx.TimeoutException as exc:
+        raise RuntimeError("SMS provider timed out") from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise RuntimeError("SMS provider request failed") from exc
+    if result.get("success") is not True:
+        raise RuntimeError(result.get("error") or "The SMS provider rejected the message")
+    return {"quotaRemaining": result.get("quotaRemaining"), "textId": result.get("textId")}
 
 
 # ---------- Trusted-Device tokens (30-day "skip 2FA on this device") ---------- #
@@ -467,6 +521,7 @@ def doc_to_admin(doc: dict) -> dict:
         "id": doc["_id"],
         "username": doc["username"],
         "email": doc.get("email"),
+        "phone": doc.get("phone"),
         "permissions": doc.get("permissions", []),
         "isSuper": bool(doc.get("isSuper")),
         "twoFactorEnabled": bool(doc.get("twoFactorEnabled")),
@@ -809,7 +864,7 @@ async def admin_login(data: LoginIn, request: Request) -> dict:
             "twoFactorToken": make_2fa_challenge_token(doc["_id"], doc["username"]),
             "username": doc["username"],
             "availableMethods": _available_2fa_methods(doc),
-            "emailHint": _obfuscate_email(doc.get("email") or "") if doc.get("email") else None,
+            "phoneHint": _obfuscate_phone(doc.get("phone") or "") if doc.get("phone") else None,
         }
 
     # 2FA not yet enrolled — issue a setup-only token so the admin must enroll before doing anything.
@@ -835,8 +890,8 @@ class TwoFactorLoginIn(BaseModel):
 
 def _available_2fa_methods(doc: dict) -> list[str]:
     methods = ["totp"]
-    if (doc.get("email") or "").strip():
-        methods.append("email")
+    if (doc.get("phone") or "").strip():
+        methods.append("sms")
     return methods
 
 
@@ -922,8 +977,8 @@ async def admin_2fa_login(payload: TwoFactorLoginIn, request: Request, admin: di
     secret = doc.get("twoFactorSecret") or ""
 
     verified = False
-    if method == "email":
-        verified = await _consume_email_otp(doc["_id"], code)
+    if method == "sms":
+        verified = await _consume_email_otp(doc["_id"], code, coll=db.admin_sms_otps)
     elif method == "backup":
         idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
         if idx >= 0:
@@ -934,12 +989,12 @@ async def admin_2fa_login(payload: TwoFactorLoginIn, request: Request, admin: di
     elif method == "totp":
         verified = _verify_totp(secret, code)
     else:
-        # Auto-detect (backwards compatibility): try TOTP -> email OTP (only if one is pending) -> backup code
+        # Auto-detect: try TOTP -> SMS OTP (only if one is pending) -> backup code
         if _verify_totp(secret, code):
             verified = True
         else:
-            has_pending_email_otp = await db.admin_email_otps.find_one({"_id": doc["_id"]}) is not None
-            if has_pending_email_otp and await _consume_email_otp(doc["_id"], code):
+            has_pending_sms_otp = await db.admin_sms_otps.find_one({"_id": doc["_id"]}) is not None
+            if has_pending_sms_otp and await _consume_email_otp(doc["_id"], code, coll=db.admin_sms_otps):
                 verified = True
             else:
                 idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
@@ -970,22 +1025,24 @@ class TwoFAChallengeIn(BaseModel):
     twoFactorToken: str
 
 
-@app.post("/api/admin/2fa/email/send")
-async def admin_2fa_email_send(admin: dict = Depends(require_challenge_2fa)) -> dict:
-    """Send a one-time 6-digit code to the admin's email as an alternative to the authenticator app."""
+@app.post("/api/admin/2fa/sms/send")
+async def admin_2fa_sms_send(admin: dict = Depends(require_challenge_2fa)) -> dict:
+    """Text a one-time 6-digit code to the admin's phone as an alternative to the authenticator app."""
     doc = await db.admins.find_one({"_id": admin["sub"]})
     if not doc or not doc.get("twoFactorEnabled"):
         raise HTTPException(status_code=400, detail="2FA is not enabled for this admin.")
-    email = (doc.get("email") or "").strip()
-    if not email:
-        raise HTTPException(status_code=400, detail="No email is set for this admin. Ask a super admin to add one, or use your authenticator app.")
+    phone = (doc.get("phone") or "").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="No phone number is set for this admin. Ask a super admin to add one, or use your authenticator app.")
+    if not TEXTBELT_API_KEY:
+        raise HTTPException(status_code=500, detail="SMS 2FA isn\u2019t available on this server (SMS not configured). Use your authenticator app.")
 
     # Rate-limit: 30 s between resends
-    prev = await db.admin_email_otps.find_one({"_id": doc["_id"]})
+    prev = await db.admin_sms_otps.find_one({"_id": doc["_id"]})
     if prev and prev.get("sent_at"):
         try:
             last = datetime.fromisoformat(prev["sent_at"])
-            wait = EMAIL_OTP_RESEND_SECONDS - int((datetime.utcnow() - last).total_seconds())
+            wait = SMS_OTP_RESEND_SECONDS - int((datetime.utcnow() - last).total_seconds())
             if wait > 0:
                 raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another code.")
         except HTTPException:
@@ -993,28 +1050,21 @@ async def admin_2fa_email_send(admin: dict = Depends(require_challenge_2fa)) -> 
         except Exception:
             pass
 
-    if not SMTP_USER or not SMTP_PASS:
-        raise HTTPException(status_code=500, detail="Email 2FA isn\u2019t available on this server (SMTP not configured). Use your authenticator app.")
-
-    code = _new_email_otp()
-    await _store_email_otp(doc["_id"], code)
+    code = _new_email_otp()  # reused: generates a random 6-digit code
+    await _store_email_otp(doc["_id"], code, coll=db.admin_sms_otps)
+    message = f"Essential Gemstones: your admin login code is {code}. It expires in {SMS_OTP_TTL_MINUTES} min. Reply STOP to opt out."
     try:
-        await asyncio.wait_for(
-            send_email(email, "Your Essential Gemstones admin code", _email_otp_html(doc.get("username", "there"), code)),
-            timeout=15,
-        )
-    except asyncio.TimeoutError:
-        logging.error("Admin 2FA email OTP send timed out")
-        raise HTTPException(status_code=504, detail="Email is taking too long to send right now. Please use your authenticator app, or try again in a minute.")
-    except Exception as e:
-        logging.exception("Failed to send admin 2FA email OTP")
-        raise HTTPException(status_code=502, detail=f"Couldn\u2019t send the email: {e}")
+        await send_admin_sms(phone, message)
+    except RuntimeError as e:
+        await db.admin_sms_otps.delete_one({"_id": doc["_id"]})
+        logging.exception("Failed to send admin 2FA SMS OTP")
+        raise HTTPException(status_code=502, detail=f"Couldn\u2019t send the text: {e}")
 
     return {
         "ok": True,
-        "sentTo": _obfuscate_email(email),
-        "expiresInMinutes": EMAIL_OTP_TTL_MINUTES,
-        "resendAfterSeconds": EMAIL_OTP_RESEND_SECONDS,
+        "sentTo": _obfuscate_phone(phone),
+        "expiresInMinutes": SMS_OTP_TTL_MINUTES,
+        "resendAfterSeconds": SMS_OTP_RESEND_SECONDS,
     }
 
 
@@ -1027,7 +1077,7 @@ async def admin_2fa_methods(admin: dict = Depends(require_challenge_2fa)) -> dic
     methods = _available_2fa_methods(doc)
     return {
         "methods": methods,
-        "emailHint": _obfuscate_email(doc.get("email") or "") if doc.get("email") else None,
+        "phoneHint": _obfuscate_phone(doc.get("phone") or "") if doc.get("phone") else None,
         "hasBackupCodes": bool(doc.get("twoFactorBackupCodes")),
     }
 
@@ -1181,15 +1231,15 @@ async def create_admin(payload: AdminCreate, admin: dict = Depends(require_admin
     if not username or not payload.password:
         raise HTTPException(status_code=400, detail="Username and password required")
     validate_password_strength(payload.password)
-    email = str(payload.email).strip().lower()
-    if not email:
-        raise HTTPException(status_code=400, detail="Email is required")
+    email = str(payload.email).strip().lower() if payload.email else None
+    phone = _normalize_phone(payload.phone) if payload.phone else None
     existing = await db.admins.find_one({"username": username})
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
-    dupe_email = await db.admins.find_one({"email": email})
-    if dupe_email:
-        raise HTTPException(status_code=400, detail="Another admin already uses that email")
+    if email:
+        dupe_email = await db.admins.find_one({"email": email})
+        if dupe_email:
+            raise HTTPException(status_code=400, detail="Another admin already uses that email")
     perms = [p for p in (payload.permissions or []) if p in ALL_PERMS]
     if payload.isSuper:
         perms = ALL_PERMS.copy()
@@ -1197,6 +1247,7 @@ async def create_admin(payload: AdminCreate, admin: dict = Depends(require_admin
         "_id": str(uuid.uuid4()),
         "username": username,
         "email": email,
+        "phone": phone,
         "passwordHash": hash_password(payload.password),
         "permissions": perms,
         "isSuper": bool(payload.isSuper),
@@ -1222,13 +1273,13 @@ async def update_admin(admin_id: str, payload: AdminUpdate, admin: dict = Depend
         update["passwordHash"] = hash_password(payload.password)
     if payload.email is not None:
         new_email = str(payload.email).strip().lower()
-        if not new_email:
-            raise HTTPException(status_code=400, detail="Email is required")
-        if new_email != (doc.get("email") or "").lower():
+        if new_email and new_email != (doc.get("email") or "").lower():
             dupe = await db.admins.find_one({"email": new_email, "_id": {"$ne": admin_id}})
             if dupe:
                 raise HTTPException(status_code=400, detail="Another admin already uses that email")
-        update["email"] = new_email
+        update["email"] = new_email or None
+    if payload.phone is not None:
+        update["phone"] = _normalize_phone(payload.phone) or None
     # Only super admins can change permissions / super flag
     if admin.get("isSuper"):
         if payload.permissions is not None:
@@ -2046,34 +2097,44 @@ async def _startup_seed_admin() -> None:
     for collection in (db.password_attempts,):
         await collection.create_index("expires_at", expireAfterSeconds=0)
     try:
-        existing_master = await db.admins.find_one({"username": "master"})
-        if not existing_master:
+        # One-time rename migration: the built-in super admin "master" becomes "luca".
+        legacy_master = await db.admins.find_one({"username": "master"})
+        if legacy_master and not await db.admins.find_one({"username": "luca"}):
+            rename_set = {"username": "luca"}
+            if not (legacy_master.get("phone") or "").strip():
+                rename_set["phone"] = SEED_ADMIN_PHONE
+            await db.admins.update_one({"_id": legacy_master["_id"]}, {"$set": rename_set})
+            logger.info("Renamed built-in super admin 'master' -> 'luca' and set phone.")
+
+        existing = await db.admins.find_one({"username": "luca"})
+        if not existing:
             await db.admins.insert_one({
                 "_id": str(uuid.uuid4()),
-                "username": "master",
-                "email": SMTP_USER or None,
+                "username": "luca",
+                "email": None,
+                "phone": SEED_ADMIN_PHONE,
                 "passwordHash": hash_password(ADMIN_PASSWORD),
                 "permissions": ALL_PERMS.copy(),
                 "isSuper": True,
                 "twoFactorEnabled": False,
                 "mustChangePassword": True,
                 "createdAt": datetime.utcnow().isoformat(),
-                "note": "Built-in super admin (formerly the master password). Change username/password anytime.",
+                "note": "Built-in super admin. Change username/password anytime.",
             })
-            logger.info("Seeded built-in 'master' super admin from ADMIN_PASSWORD.")
+            logger.info("Seeded built-in 'luca' super admin from ADMIN_PASSWORD.")
         else:
-            stored = existing_master.get("passwordHash", "")
+            # Ensure the super admin always has the configured phone if it has none.
+            if not (existing.get("phone") or "").strip():
+                await db.admins.update_one({"_id": existing["_id"]}, {"$set": {"phone": SEED_ADMIN_PHONE}})
+            stored = existing.get("passwordHash", "")
             if not verify_password(ADMIN_PASSWORD, stored):
-                # Only self-heal when the CURRENT env password can't unlock the master account.
-                # This avoids overwriting a password the admin has intentionally changed.
-                # We ONLY heal when the account is still on defaults (no 2FA, mustChangePassword flag set).
-                if not existing_master.get("twoFactorEnabled") and existing_master.get("mustChangePassword"):
+                if not existing.get("twoFactorEnabled") and existing.get("mustChangePassword"):
                     await db.admins.update_one(
-                        {"_id": existing_master["_id"]},
+                        {"_id": existing["_id"]},
                         {"$set": {"passwordHash": hash_password(ADMIN_PASSWORD)}},
                     )
                     logger.warning(
-                        "Self-healed 'master' passwordHash from ADMIN_PASSWORD env "
+                        "Self-healed 'luca' passwordHash from ADMIN_PASSWORD env "
                         "(stored hash no longer matched). Please sign in and change the password."
                     )
     except Exception as exc:  # noqa: BLE001

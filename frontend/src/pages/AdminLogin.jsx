@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Lock, Gem, User, ShieldCheck, KeyRound, Copy, Check, RefreshCw, Mail, Smartphone } from 'lucide-react';
+import { Lock, Gem, User, ShieldCheck, KeyRound, Copy, Check, RefreshCw, Smartphone } from 'lucide-react';
 import api from '../lib/api';
 import { useToast } from '../hooks/use-toast';
 
@@ -18,7 +18,7 @@ function pwdIssues(p) {
 }
 
 export default function AdminLogin() {
-  const [step, setStep] = useState('password'); // password | setup | choose | totp | email | backup
+  const [step, setStep] = useState('password'); // password | setup | choose | totp | sms | backup
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -27,12 +27,12 @@ export default function AdminLogin() {
   const [, setPendingUser] = useState(null);
   const [setupData, setSetupData] = useState(null);
   const [availableMethods, setAvailableMethods] = useState(['totp']);
-  const [emailHint, setEmailHint] = useState('');
+  const [phoneHint, setPhoneHint] = useState('');
   const [code, setCode] = useState('');
   const [backupCodes, setBackupCodes] = useState(null);
   const [copiedSecret, setCopiedSecret] = useState(false);
   const [trustDevice, setTrustDevice] = useState(false);
-  const [emailSentAt, setEmailSentAt] = useState(0);
+  const [smsSentAt, setSmsSentAt] = useState(0);
   const [resendCooldown, setResendCooldown] = useState(0);
   const codeRef = useRef(null);
   const navigate = useNavigate();
@@ -43,12 +43,12 @@ export default function AdminLogin() {
   }, [navigate]);
 
   useEffect(() => {
-    if ((step === 'totp' || step === 'email' || step === 'backup' || (step === 'setup' && setupData)) && codeRef.current) {
+    if ((step === 'totp' || step === 'sms' || step === 'backup' || (step === 'setup' && setupData)) && codeRef.current) {
       codeRef.current.focus();
     }
   }, [step, setupData]);
 
-  // Countdown for email resend
+  // Countdown for SMS resend
   useEffect(() => {
     if (resendCooldown <= 0) return undefined;
     const id = setInterval(() => {
@@ -78,7 +78,7 @@ export default function AdminLogin() {
       if (data.status === 'needs_2fa') {
         setChallengeToken(data.twoFactorToken);
         setAvailableMethods(Array.isArray(data.availableMethods) && data.availableMethods.length ? data.availableMethods : ['totp']);
-        setEmailHint(data.emailHint || '');
+        setPhoneHint(data.phoneHint || '');
         // If only one method, jump straight to it
         if (!data.availableMethods || data.availableMethods.length <= 1) {
           setStep('totp');
@@ -122,14 +122,14 @@ export default function AdminLogin() {
     }
   };
 
-  const sendEmailCode = async () => {
+  const sendSmsCode = async () => {
     setLoading(true);
     try {
-      const { data } = await api.post('/admin/2fa/email/send', {}, { headers: { Authorization: `Bearer ${challengeToken}` } });
-      setEmailHint(data.sentTo || emailHint);
-      setEmailSentAt(Date.now());
+      const { data } = await api.post('/admin/2fa/sms/send', {}, { headers: { Authorization: `Bearer ${challengeToken}` } });
+      setPhoneHint(data.sentTo || phoneHint);
+      setSmsSentAt(Date.now());
       setResendCooldown(data.resendAfterSeconds || 30);
-      toast({ title: 'Code sent', description: `We sent a 6-digit code to ${data.sentTo}. It expires in ${data.expiresInMinutes || 10} minutes.` });
+      toast({ title: 'Code sent', description: `We texted a 6-digit code to ${data.sentTo}. It expires in ${data.expiresInMinutes || 5} minutes.` });
     } catch (err) {
       toast({ title: 'Couldn\u2019t send code', description: err?.response?.data?.detail || 'Try your authenticator app instead.', variant: 'destructive' });
     } finally {
@@ -139,9 +139,9 @@ export default function AdminLogin() {
 
   const chooseMethod = async (method) => {
     setCode('');
-    if (method === 'email') {
-      setStep('email');
-      await sendEmailCode();
+    if (method === 'sms') {
+      setStep('sms');
+      await sendSmsCode();
     } else if (method === 'backup') {
       setStep('backup');
     } else {
@@ -209,7 +209,7 @@ export default function AdminLogin() {
             <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Username</label>
             <div className="relative mb-5">
               <User className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-[#8b6b4f]" />
-              <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required autoFocus data-testid="admin-login-username" className="w-full pl-11 pr-4 py-3.5 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-[#faf6f0]" placeholder="master" />
+              <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required autoFocus data-testid="admin-login-username" className="w-full pl-11 pr-4 py-3.5 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-[#faf6f0]" placeholder="luca" />
             </div>
             <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Password</label>
             <div className="relative mb-6">
@@ -308,13 +308,13 @@ export default function AdminLogin() {
               sub="Open Microsoft Authenticator (or similar) and enter the 6-digit code."
               onClick={() => chooseMethod('totp')}
             />
-            {availableMethods.includes('email') && (
+            {availableMethods.includes('sms') && (
               <MethodButton
-                testid="admin-2fa-choose-email"
-                icon={<Mail className="w-5 h-5" />}
-                title="Email me a code"
-                sub={emailHint ? `Send a 6-digit code to ${emailHint}.` : 'Send a 6-digit code to your admin email.'}
-                onClick={() => chooseMethod('email')}
+                testid="admin-2fa-choose-sms"
+                icon={<Smartphone className="w-5 h-5" />}
+                title="Text me a code"
+                sub={phoneHint ? `Send a 6-digit code by SMS to ${phoneHint}.` : 'Send a 6-digit code to your admin phone.'}
+                onClick={() => chooseMethod('sms')}
               />
             )}
             <MethodButton
@@ -354,37 +354,37 @@ export default function AdminLogin() {
         </ChallengeCard>
       )}
 
-      {step === 'email' && (
+      {step === 'sms' && (
         <ChallengeCard
-          title="Check your email"
-          hint={`We sent a 6-digit code to ${emailHint || 'your admin email'}. It expires in 10 minutes.`}
+          title="Check your phone"
+          hint={`We texted a 6-digit code to ${phoneHint || 'your admin phone'}. It expires in 5 minutes.`}
           canSwitch
           onSwitch={() => setStep('choose')}
           onCancel={restart}
         >
-          <form onSubmit={(e) => submitChallenge(e, 'email')} data-testid="admin-2fa-email-form">
+          <form onSubmit={(e) => submitChallenge(e, 'sms')} data-testid="admin-2fa-sms-form">
             <CodeInput
               value={code}
               onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
               refEl={codeRef}
-              testid="admin-2fa-email-code"
+              testid="admin-2fa-sms-code"
               placeholder="000000"
               maxLength={6}
             />
             <div className="flex items-center justify-between mb-4">
               <button
                 type="button"
-                onClick={sendEmailCode}
+                onClick={sendSmsCode}
                 disabled={loading || resendCooldown > 0}
-                data-testid="admin-2fa-email-resend"
+                data-testid="admin-2fa-sms-resend"
                 className="text-xs text-[#6b4f3a] hover:text-[#1a1410] disabled:opacity-50"
               >
-                {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : (emailSentAt ? 'Resend code' : 'Send code')}
+                {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : (smsSentAt ? 'Resend code' : 'Send code')}
               </button>
-              <span className="text-[11px] text-[#8b6b4f]">Didn\u2019t get it? Check spam.</span>
+              <span className="text-[11px] text-[#8b6b4f]">Standard message rates may apply.</span>
             </div>
             <TrustToggle trustDevice={trustDevice} setTrustDevice={setTrustDevice} />
-            <button type="submit" disabled={loading || code.length !== 6} data-testid="admin-2fa-email-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60">
+            <button type="submit" disabled={loading || code.length !== 6} data-testid="admin-2fa-sms-submit" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60">
               {loading ? 'Verifying\u2026' : 'Verify & sign in'}
             </button>
           </form>
