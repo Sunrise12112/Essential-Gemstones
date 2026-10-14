@@ -1,14 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { X, Loader2, Gem } from 'lucide-react';
+import { X, Loader2, Gem, Smartphone, ArrowLeft } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../hooks/use-toast';
 
 export default function AuthModal() {
-  const { authModalOpen, closeAuthModal, authModalMode, register, login, beginGoogleSignIn } = useAuth();
+  const { authModalOpen, closeAuthModal, authModalMode, register, login, beginGoogleSignIn, phoneSendCode, phoneVerify } = useAuth();
   const [mode, setMode] = useState(authModalMode);
   const [form, setForm] = useState({ fullName: '', email: '', password: '' });
   const [submitting, setSubmitting] = useState(false);
   const { toast } = useToast();
+
+  // Phone (passwordless) flow
+  const [phoneStep, setPhoneStep] = useState(null); // null | 'enter' | 'verify'
+  const [phone, setPhone] = useState('');
+  const [phoneCode, setPhoneCode] = useState('');
+  const [phoneExisting, setPhoneExisting] = useState(false);
+  const [pForm, setPForm] = useState({ fullName: '', email: '' });
 
   useEffect(() => { setMode(authModalMode); }, [authModalMode]);
 
@@ -19,6 +26,38 @@ export default function AuthModal() {
   }, [authModalOpen, closeAuthModal]);
 
   if (!authModalOpen) return null;
+
+  const resetPhone = () => { setPhoneStep(null); setPhone(''); setPhoneCode(''); setPhoneExisting(false); setPForm({ fullName: '', email: '' }); };
+
+  const sendPhoneCode = async (e) => {
+    if (e) e.preventDefault();
+    setSubmitting(true);
+    try {
+      const data = await phoneSendCode(phone);
+      setPhoneExisting(!!data.existing);
+      setPhoneStep('verify');
+      toast({ title: 'Code sent', description: `We texted a 6-digit code to ${data.sentTo}.` });
+    } catch (err) {
+      toast({ title: 'Couldn\u2019t send code', description: String(err?.response?.data?.detail || 'Try again.'), variant: 'destructive' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const verifyPhone = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      await phoneVerify({ phone, code: phoneCode, fullName: pForm.fullName, email: pForm.email, subscribeNewsletter: true });
+      toast({ title: 'Signed in', description: 'Welcome!' });
+      resetPhone();
+      closeAuthModal();
+    } catch (err) {
+      toast({ title: 'Verification failed', description: String(err?.response?.data?.detail || 'Check the code and try again.'), variant: 'destructive' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -54,6 +93,24 @@ export default function AuthModal() {
           <p className="text-sm text-[#d4c5af]">{mode === 'register' ? 'Create your account for member perks, favorites, and early access.' : 'Sign in to see your favorites and unlock member content.'}</p>
         </div>
         <div className="px-6 sm:px-8 py-7 space-y-4">
+          {phoneStep ? (
+            <PhonePanel
+              step={phoneStep}
+              phone={phone}
+              setPhone={setPhone}
+              phoneCode={phoneCode}
+              setPhoneCode={setPhoneCode}
+              phoneExisting={phoneExisting}
+              pForm={pForm}
+              setPForm={setPForm}
+              submitting={submitting}
+              onSend={sendPhoneCode}
+              onVerify={verifyPhone}
+              onBack={() => (phoneStep === 'verify' ? setPhoneStep('enter') : resetPhone())}
+              onResend={() => sendPhoneCode()}
+            />
+          ) : (
+          <>
           <button
             type="button"
             onClick={beginGoogleSignIn}
@@ -62,6 +119,15 @@ export default function AuthModal() {
           >
             <GoogleGlyph />
             Continue with Google
+          </button>
+          <button
+            type="button"
+            onClick={() => setPhoneStep('enter')}
+            data-testid="auth-phone-btn"
+            className="w-full py-3 border border-[#e8dfd1] bg-white rounded-full text-sm text-[#1a1410] hover:bg-[#faf6f0] transition-colors inline-flex items-center justify-center gap-3"
+          >
+            <Smartphone className="w-4 h-4 text-[#6b4f3a]" />
+            Continue with phone
           </button>
           <div className="flex items-center gap-3 my-1">
             <div className="flex-1 h-px bg-[#e8dfd1]" />
@@ -95,8 +161,48 @@ export default function AuthModal() {
               <>New here? <button type="button" data-testid="auth-switch-to-register" onClick={() => setMode('register')} className="text-[#6b4f3a] underline underline-offset-4">Create an account</button></>
             )}
           </p>
+          </>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function PhonePanel({ step, phone, setPhone, phoneCode, setPhoneCode, phoneExisting, pForm, setPForm, submitting, onSend, onVerify, onBack, onResend }) {
+  return (
+    <div data-testid="auth-phone-panel" className="space-y-4">
+      <button type="button" onClick={onBack} className="inline-flex items-center gap-1 text-xs text-[#6b4f3a] hover:text-[#1a1410]"><ArrowLeft className="w-3 h-3" /> Back</button>
+      {step === 'enter' ? (
+        <form onSubmit={onSend} className="space-y-4">
+          <div>
+            <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Mobile number</label>
+            <input type="tel" required autoFocus data-testid="auth-phone-input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(555) 123-4567" className="w-full px-4 py-3 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-white" />
+            <p className="text-[11px] text-[#8b6b4f] mt-2">We’ll text you a 6-digit code. Standard rates may apply.</p>
+          </div>
+          <button type="submit" disabled={submitting || phone.replace(/\D/g, '').length < 10} data-testid="auth-phone-send" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-2">
+            {submitting && <Loader2 className="w-4 h-4 animate-spin" />} {submitting ? 'Sending\u2026' : 'Text me a code'}
+          </button>
+        </form>
+      ) : (
+        <form onSubmit={onVerify} className="space-y-4">
+          <div>
+            <label className="block text-xs tracking-[0.2em] uppercase text-[#8b6b4f] mb-2">Enter the code</label>
+            <input inputMode="numeric" required autoFocus data-testid="auth-phone-code" value={phoneCode} onChange={(e) => setPhoneCode(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" className="w-full text-center tracking-[0.5em] text-lg px-4 py-3 border border-[#e8dfd1] rounded-2xl bg-white focus:outline-none focus:border-[#6b4f3a] font-mono" />
+            <button type="button" onClick={onResend} className="text-xs text-[#6b4f3a] hover:text-[#1a1410] mt-2">Resend code</button>
+          </div>
+          {!phoneExisting && (
+            <>
+              <p className="text-xs text-[#5a4a3d]">Looks like you’re new — tell us a little about you to finish:</p>
+              <input required data-testid="auth-phone-name" value={pForm.fullName} onChange={(e) => setPForm({ ...pForm, fullName: e.target.value })} placeholder="Your name" className="w-full px-4 py-3 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-white" />
+              <input type="email" required data-testid="auth-phone-email" value={pForm.email} onChange={(e) => setPForm({ ...pForm, email: e.target.value })} placeholder="you@example.com" className="w-full px-4 py-3 border border-[#e8dfd1] rounded-full focus:border-[#6b4f3a] focus:outline-none bg-white" />
+            </>
+          )}
+          <button type="submit" disabled={submitting || phoneCode.length !== 6} data-testid="auth-phone-verify" className="w-full py-3.5 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm tracking-wider uppercase hover:bg-[#6b4f3a] transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-2">
+            {submitting && <Loader2 className="w-4 h-4 animate-spin" />} {submitting ? 'Verifying\u2026' : (phoneExisting ? 'Sign in' : 'Create account')}
+          </button>
+        </form>
+      )}
     </div>
   );
 }

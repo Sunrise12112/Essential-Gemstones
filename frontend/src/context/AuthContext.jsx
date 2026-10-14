@@ -92,6 +92,17 @@ export function AuthProvider({ children }) {
     window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
   };
 
+  const phoneSendCode = async (phone) => {
+    const { data } = await api.post('/auth/phone/send-code', { phone });
+    return data; // { ok, sentTo, existing, expiresInMinutes, resendAfterSeconds }
+  };
+
+  const phoneVerify = async ({ phone, code, fullName, email, subscribeNewsletter = true }) => {
+    const { data } = await api.post('/auth/phone/verify', { phone, code, fullName, email, subscribeNewsletter });
+    setAuth(data.token, data.user);
+    return data.user;
+  };
+
   const completeGoogleSignIn = async (sessionId) => {
     const { data } = await api.post('/auth/google/session', { session_id: sessionId });
     setAuth(data.token, data.user);
@@ -142,6 +153,8 @@ export function AuthProvider({ children }) {
       closeAuthModal,
       beginGoogleSignIn,
       completeGoogleSignIn,
+      phoneSendCode,
+      phoneVerify,
       authModalOpen,
       authModalMode,
     }}>

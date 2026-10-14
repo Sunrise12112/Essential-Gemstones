@@ -858,21 +858,21 @@ async def admin_login(data: LoginIn, request: Request) -> dict:
             )
             return {"status": "ok", "token": token, "user": doc_to_admin(doc), "trustedDevice": True}
 
-        # Otherwise, return a short-lived 2FA challenge token.
+        if not (doc.get("phone") or "").strip():
+            raise HTTPException(status_code=403, detail="No phone number is on file for this admin. Ask a super admin to add one in Manage Admins.")
+
+        # Return a short-lived 2FA challenge token (SMS code + backup codes).
         return {
             "status": "needs_2fa",
             "twoFactorToken": make_2fa_challenge_token(doc["_id"], doc["username"]),
             "username": doc["username"],
             "availableMethods": _available_2fa_methods(doc),
             "phoneHint": _obfuscate_phone(doc.get("phone") or "") if doc.get("phone") else None,
+            "hasBackupCodes": bool(doc.get("twoFactorBackupCodes")),
         }
 
-    # 2FA not yet enrolled — issue a setup-only token so the admin must enroll before doing anything.
-    return {
-        "status": "needs_2fa_setup",
-        "setupToken": make_2fa_setup_token(doc["_id"], doc["username"]),
-        "user": doc_to_admin(doc),
-    }
+    # Should not happen (admins are created with 2FA enabled); treat as misconfig.
+    raise HTTPException(status_code=403, detail="This admin account is not set up for login. Ask a super admin to re-add it.")
 
 
 # ---- 2FA ENDPOINTS ---- #
@@ -889,7 +889,9 @@ class TwoFactorLoginIn(BaseModel):
 
 
 def _available_2fa_methods(doc: dict) -> list[str]:
-    methods = ["totp"]
+    # Authenticator app (TOTP) is removed. Admins verify by SMS to their phone,
+    # with backup codes as a fallback.
+    methods = []
     if (doc.get("phone") or "").strip():
         methods.append("sms")
     return methods
@@ -974,7 +976,6 @@ async def admin_2fa_login(payload: TwoFactorLoginIn, request: Request, admin: di
         raise HTTPException(status_code=400, detail="2FA is not enabled for this admin.")
     code = (payload.code or "").strip()
     method = (payload.method or "").strip().lower()
-    secret = doc.get("twoFactorSecret") or ""
 
     verified = False
     if method == "sms":
@@ -986,23 +987,18 @@ async def admin_2fa_login(payload: TwoFactorLoginIn, request: Request, admin: di
             remaining.pop(idx)
             await db.admins.update_one({"_id": doc["_id"]}, {"$set": {"twoFactorBackupCodes": remaining}})
             verified = True
-    elif method == "totp":
-        verified = _verify_totp(secret, code)
     else:
-        # Auto-detect: try TOTP -> SMS OTP (only if one is pending) -> backup code
-        if _verify_totp(secret, code):
+        # Auto-detect: pending SMS code -> backup code
+        has_pending_sms_otp = await db.admin_sms_otps.find_one({"_id": doc["_id"]}) is not None
+        if has_pending_sms_otp and await _consume_email_otp(doc["_id"], code, coll=db.admin_sms_otps):
             verified = True
         else:
-            has_pending_sms_otp = await db.admin_sms_otps.find_one({"_id": doc["_id"]}) is not None
-            if has_pending_sms_otp and await _consume_email_otp(doc["_id"], code, coll=db.admin_sms_otps):
+            idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
+            if idx >= 0:
+                remaining = list(doc.get("twoFactorBackupCodes") or [])
+                remaining.pop(idx)
+                await db.admins.update_one({"_id": doc["_id"]}, {"$set": {"twoFactorBackupCodes": remaining}})
                 verified = True
-            else:
-                idx = _match_backup_code(code, doc.get("twoFactorBackupCodes") or [])
-                if idx >= 0:
-                    remaining = list(doc.get("twoFactorBackupCodes") or [])
-                    remaining.pop(idx)
-                    await db.admins.update_one({"_id": doc["_id"]}, {"$set": {"twoFactorBackupCodes": remaining}})
-                    verified = True
 
     if not verified:
         raise HTTPException(status_code=401, detail="Invalid code")
@@ -1116,32 +1112,36 @@ async def revoke_all_trusted_devices(admin: dict = Depends(require_admin)) -> di
     return {"ok": True, "revoked": res.deleted_count}
 
 
-@app.post("/api/admin/2fa/disable")
-async def admin_2fa_disable(payload: TwoFactorVerifyIn, admin: dict = Depends(require_admin)) -> dict:
-    """Disable 2FA on your OWN admin account (requires current 6-digit code)."""
+@app.post("/api/admin/2fa/backup-codes/send-code")
+async def admin_backup_codes_send_sms(admin: dict = Depends(require_admin)) -> dict:
+    """Text a confirmation code to the logged-in admin's phone before regenerating backup codes."""
     doc = await db.admins.find_one({"_id": admin["sub"]})
     if not doc:
         raise HTTPException(status_code=404, detail="Admin not found")
-    if not doc.get("twoFactorEnabled"):
-        raise HTTPException(status_code=400, detail="2FA is not enabled.")
-    if not _verify_totp(doc.get("twoFactorSecret") or "", payload.code):
-        raise HTTPException(status_code=401, detail="Invalid code")
-    await db.admins.update_one(
-        {"_id": doc["_id"]},
-        {
-            "$unset": {
-                "twoFactorSecret": "",
-                "twoFactorEnabled": "",
-                "twoFactorBackupCodes": "",
-                "twoFactorPendingSecret": "",
-                "twoFactorEnabledAt": "",
-            }
-        },
-    )
-    # Revoke all trusted devices tied to this admin
-    await db.admin_trusted_devices.delete_many({"adminId": doc["_id"]})
-    await db.admin_email_otps.delete_one({"_id": doc["_id"]})
-    return {"ok": True}
+    phone = (doc.get("phone") or "").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="No phone number is set for your account.")
+    if not TEXTBELT_API_KEY:
+        raise HTTPException(status_code=500, detail="SMS isn\u2019t configured on this server.")
+    prev = await db.admin_sms_otps.find_one({"_id": doc["_id"]})
+    if prev and prev.get("sent_at"):
+        try:
+            last = datetime.fromisoformat(prev["sent_at"])
+            wait = SMS_OTP_RESEND_SECONDS - int((datetime.utcnow() - last).total_seconds())
+            if wait > 0:
+                raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another code.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    code = _new_email_otp()
+    await _store_email_otp(doc["_id"], code, coll=db.admin_sms_otps)
+    try:
+        await send_admin_sms(phone, f"Essential Gemstones: your backup-code confirmation is {code}. Expires in {SMS_OTP_TTL_MINUTES} min.")
+    except RuntimeError as e:
+        await db.admin_sms_otps.delete_one({"_id": doc["_id"]})
+        raise HTTPException(status_code=502, detail=f"Couldn\u2019t send the text: {e}")
+    return {"ok": True, "sentTo": _obfuscate_phone(phone), "resendAfterSeconds": SMS_OTP_RESEND_SECONDS}
 
 
 @app.get("/api/admin/2fa/backup-codes")
@@ -1157,11 +1157,12 @@ async def admin_2fa_backup_codes_remaining(admin: dict = Depends(require_admin))
 
 @app.post("/api/admin/2fa/backup-codes/regenerate")
 async def admin_2fa_regenerate_backup_codes(payload: TwoFactorVerifyIn, admin: dict = Depends(require_admin)) -> dict:
+    """Confirm with a texted code, then issue 10 fresh backup codes."""
     doc = await db.admins.find_one({"_id": admin["sub"]})
-    if not doc or not doc.get("twoFactorEnabled"):
-        raise HTTPException(status_code=400, detail="2FA is not enabled.")
-    if not _verify_totp(doc.get("twoFactorSecret") or "", payload.code):
-        raise HTTPException(status_code=401, detail="Invalid code")
+    if not doc:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    if not await _consume_email_otp(doc["_id"], (payload.code or "").strip(), coll=db.admin_sms_otps):
+        raise HTTPException(status_code=401, detail="Invalid or expired code. Tap \u201cText me a code\u201d and try again.")
     codes = _new_backup_codes()
     await db.admins.update_one(
         {"_id": doc["_id"]},
@@ -1172,25 +1173,17 @@ async def admin_2fa_regenerate_backup_codes(payload: TwoFactorVerifyIn, admin: d
 
 @app.post("/api/admin/2fa/reset/{admin_id}")
 async def admin_2fa_reset(admin_id: str, admin: dict = Depends(require_admin)) -> dict:
-    """Super-admin only: wipe another admin's 2FA (so they can re-enroll on next login)."""
+    """Super-admin only: clear another admin's backup codes & pending codes (they still log in by SMS)."""
     require_super(admin)
     doc = await db.admins.find_one({"_id": admin_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Admin not found")
     await db.admins.update_one(
         {"_id": admin_id},
-        {
-            "$unset": {
-                "twoFactorSecret": "",
-                "twoFactorEnabled": "",
-                "twoFactorBackupCodes": "",
-                "twoFactorPendingSecret": "",
-                "twoFactorEnabledAt": "",
-            }
-        },
+        {"$unset": {"twoFactorBackupCodes": ""}},
     )
     await db.admin_trusted_devices.delete_many({"adminId": admin_id})
-    await db.admin_email_otps.delete_one({"_id": admin_id})
+    await db.admin_sms_otps.delete_one({"_id": admin_id})
     return {"ok": True}
 
 
@@ -1253,7 +1246,7 @@ async def create_admin(payload: AdminCreate, admin: dict = Depends(require_admin
         "passwordHash": hash_password(payload.password),
         "permissions": perms,
         "isSuper": bool(payload.isSuper),
-        "twoFactorEnabled": False,
+        "twoFactorEnabled": True,
         "createdAt": datetime.utcnow().isoformat(),
     }
     await db.admins.insert_one(doc)
@@ -1735,6 +1728,7 @@ def user_to_public(doc: dict) -> dict:
         "id": doc["_id"],
         "fullName": doc.get("fullName", ""),
         "email": doc.get("email", ""),
+        "phone": doc.get("phone", ""),
         "picture": doc.get("picture", ""),
         "authProvider": doc.get("authProvider", "email"),
         "isBanned": bool(doc.get("isBanned")),
@@ -1810,7 +1804,102 @@ async def auth_login(payload: UserLoginIn) -> dict:
     return {"token": token, "user": user_to_public(doc)}
 
 
-# ---------- Sign in with Google (Emergent-managed OAuth) ---------- #
+# ---------- Member passwordless phone login / signup (SMS OTP) ---------- #
+
+class PhoneStartIn(BaseModel):
+    phone: str
+
+
+class PhoneVerifyIn(BaseModel):
+    phone: str
+    code: str
+    fullName: Optional[str] = None
+    email: Optional[EmailStr] = None
+    subscribeNewsletter: bool = True
+
+
+@app.post("/api/auth/phone/send-code")
+async def auth_phone_send_code(payload: PhoneStartIn) -> dict:
+    phone = _normalize_phone(payload.phone)
+    if not phone or len(phone.lstrip("+")) < 10:
+        raise HTTPException(status_code=400, detail="Please enter a valid mobile number")
+    if not TEXTBELT_API_KEY:
+        raise HTTPException(status_code=500, detail="SMS sign-in isn\u2019t available right now.")
+    existing = await db.users.find_one({"phone": phone})
+    # Resend throttle
+    prev = await db.user_phone_otps.find_one({"_id": phone})
+    if prev and prev.get("sent_at"):
+        try:
+            last = datetime.fromisoformat(prev["sent_at"])
+            wait = SMS_OTP_RESEND_SECONDS - int((datetime.utcnow() - last).total_seconds())
+            if wait > 0:
+                raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another code.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    code = _new_email_otp()
+    await _store_email_otp(phone, code, coll=db.user_phone_otps)
+    try:
+        await send_admin_sms(phone, f"Essential Gemstones: your sign-in code is {code}. Expires in {SMS_OTP_TTL_MINUTES} min. Reply STOP to opt out.")
+    except RuntimeError as e:
+        await db.user_phone_otps.delete_one({"_id": phone})
+        raise HTTPException(status_code=502, detail=f"Couldn\u2019t send the text: {e}")
+    return {
+        "ok": True,
+        "sentTo": _obfuscate_phone(phone),
+        "existing": existing is not None,
+        "expiresInMinutes": SMS_OTP_TTL_MINUTES,
+        "resendAfterSeconds": SMS_OTP_RESEND_SECONDS,
+    }
+
+
+@app.post("/api/auth/phone/verify")
+async def auth_phone_verify(payload: PhoneVerifyIn) -> dict:
+    phone = _normalize_phone(payload.phone)
+    if not phone:
+        raise HTTPException(status_code=400, detail="Missing phone number")
+    if not await _consume_email_otp(phone, (payload.code or "").strip(), coll=db.user_phone_otps):
+        raise HTTPException(status_code=401, detail="Invalid or expired code")
+
+    # 1) Existing member with this phone -> log in
+    doc = await db.users.find_one({"phone": phone})
+    # 2) No phone match but an email was supplied that belongs to an account -> link phone
+    if not doc and payload.email:
+        email = str(payload.email).strip().lower()
+        by_email = await db.users.find_one({"email": email})
+        if by_email:
+            await db.users.update_one({"_id": by_email["_id"]}, {"$set": {"phone": phone}})
+            by_email["phone"] = phone
+            doc = by_email
+    # 3) Brand-new member -> require name + email
+    if not doc:
+        full_name = (payload.fullName or "").strip()
+        email = str(payload.email).strip().lower() if payload.email else ""
+        if len(full_name) < 2:
+            raise HTTPException(status_code=400, detail="Please enter your full name")
+        if not email or "@" not in email:
+            raise HTTPException(status_code=400, detail="Please enter a valid email")
+        if await db.users.find_one({"email": email}):
+            raise HTTPException(status_code=400, detail="An account with that email already exists \u2014 sign in with it, or use a different email.")
+        doc = {
+            "_id": str(uuid.uuid4()),
+            "fullName": full_name,
+            "email": email,
+            "phone": phone,
+            "authProvider": "phone",
+            "isBanned": False,
+            "favorites": [],
+            "createdAt": datetime.utcnow().isoformat(),
+        }
+        await db.users.insert_one(doc)
+        if payload.subscribeNewsletter and not await db.subscribers.find_one({"email": email}):
+            await db.subscribers.insert_one({"_id": str(uuid.uuid4()), "email": email, "createdAt": datetime.utcnow().isoformat()})
+
+    if doc.get("isBanned"):
+        raise HTTPException(status_code=403, detail="Your account has been suspended.")
+    token = make_user_token(doc["_id"], doc.get("email") or doc["_id"])
+    return {"token": token, "user": user_to_public(doc)}
 # REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 
 

@@ -354,6 +354,7 @@ function BackupCodesButton() {
   const [busy, setBusy] = useState(false);
   const [codes, setCodes] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [sentTo, setSentTo] = useState('');
 
   const loadRemaining = async () => {
     try {
@@ -368,12 +369,27 @@ function BackupCodesButton() {
     setCode('');
     setCodes(null);
     setCopied(false);
+    setSentTo('');
     setOpen(true);
   };
 
   const closeModal = () => {
     setOpen(false);
     if (codes) loadRemaining();
+  };
+
+  const sendCode = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post('/admin/2fa/backup-codes/send-code', {});
+      setSentTo(data.sentTo || '');
+      toast({ title: 'Code sent', description: `We texted a confirmation code to ${data.sentTo}.` });
+    } catch (e) {
+      toast({ title: 'Couldn\u2019t send code', description: e?.response?.data?.detail || 'Try again.', variant: 'destructive' });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const generate = async () => {
@@ -385,7 +401,7 @@ function BackupCodesButton() {
       setCodes(data.backupCodes || []);
       toast({ title: 'New backup codes ready', description: 'Save them now — your old codes no longer work.' });
     } catch (e) {
-      toast({ title: 'Couldn\u2019t regenerate', description: e?.response?.data?.detail || 'Check your authenticator code and try again.', variant: 'destructive' });
+      toast({ title: 'Couldn\u2019t regenerate', description: e?.response?.data?.detail || 'Check the texted code and try again.', variant: 'destructive' });
     } finally {
       setBusy(false);
     }
@@ -434,21 +450,28 @@ function BackupCodesButton() {
               {!codes ? (
                 <>
                   <p className="text-sm text-[#5a4a3d] mb-4">
-                    Generating new codes will <strong className="text-[#1a1410]">invalidate all your existing backup codes</strong>. Enter the current 6-digit code from your authenticator app to confirm.
+                    Generating new codes will <strong className="text-[#1a1410]">invalidate all your existing backup codes</strong>. We’ll text a confirmation code to your phone{sentTo ? ` (${sentTo})` : ''}.
                   </p>
+                  <button
+                    onClick={sendCode}
+                    disabled={busy}
+                    data-testid="backup-codes-send-sms"
+                    className="w-full mb-3 inline-flex items-center justify-center gap-2 px-5 py-2.5 border border-[#e8dfd1] rounded-full text-sm hover:bg-white disabled:opacity-50"
+                  >
+                    {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} {sentTo ? 'Resend code' : 'Text me a code'}
+                  </button>
                   <input
                     value={code}
                     onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                     onKeyDown={(e) => { if (e.key === 'Enter') generate(); }}
                     inputMode="numeric"
-                    autoFocus
-                    placeholder="123456"
-                    data-testid="backup-codes-totp-input"
+                    placeholder="Enter texted code"
+                    data-testid="backup-codes-sms-input"
                     className="w-full text-center tracking-[0.5em] text-lg px-4 py-3 border border-[#e8dfd1] rounded-2xl bg-white focus:outline-none focus:border-[#6b4f3a] font-mono"
                   />
                   <button
                     onClick={generate}
-                    disabled={busy || code.trim().length < 6}
+                    disabled={busy || code.trim().length < 6 || !sentTo}
                     data-testid="backup-codes-generate"
                     className="mt-4 w-full inline-flex items-center justify-center gap-2 px-5 py-3 bg-[#1a1410] text-[#faf6f0] rounded-full text-sm hover:bg-[#6b4f3a] disabled:opacity-50"
                   >

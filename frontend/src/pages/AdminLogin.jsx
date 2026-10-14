@@ -77,13 +77,15 @@ export default function AdminLogin() {
       }
       if (data.status === 'needs_2fa') {
         setChallengeToken(data.twoFactorToken);
-        setAvailableMethods(Array.isArray(data.availableMethods) && data.availableMethods.length ? data.availableMethods : ['totp']);
+        const methods = Array.isArray(data.availableMethods) && data.availableMethods.length ? data.availableMethods : ['sms'];
+        setAvailableMethods(methods);
         setPhoneHint(data.phoneHint || '');
-        // If only one method, jump straight to it
-        if (!data.availableMethods || data.availableMethods.length <= 1) {
-          setStep('totp');
+        // SMS is the primary method — text the code and jump straight to code entry.
+        if (methods.includes('sms')) {
+          setStep('sms');
+          await sendSmsCode(data.twoFactorToken);
         } else {
-          setStep('choose');
+          setStep('backup');
         }
       } else if (data.status === 'needs_2fa_setup') {
         setSetupToken(data.setupToken);
@@ -122,10 +124,11 @@ export default function AdminLogin() {
     }
   };
 
-  const sendSmsCode = async () => {
+  const sendSmsCode = async (tokenArg) => {
+    const tok = tokenArg || challengeToken;
     setLoading(true);
     try {
-      const { data } = await api.post('/admin/2fa/sms/send', {}, { headers: { Authorization: `Bearer ${challengeToken}` } });
+      const { data } = await api.post('/admin/2fa/sms/send', {}, { headers: { Authorization: `Bearer ${tok}` } });
       setPhoneHint(data.sentTo || phoneHint);
       setSmsSentAt(Date.now());
       setResendCooldown(data.resendAfterSeconds || 30);
@@ -301,13 +304,6 @@ export default function AdminLogin() {
           <h1 className="font-serif text-3xl text-[#1a1410] mb-2">How would you like to sign in?</h1>
           <p className="text-sm text-[#5a4a3d] mb-6">Pick a method to receive your 6-digit code.</p>
           <div className="space-y-3">
-            <MethodButton
-              testid="admin-2fa-choose-totp"
-              icon={<Smartphone className="w-5 h-5" />}
-              title="Use my authenticator app"
-              sub="Open Microsoft Authenticator (or similar) and enter the 6-digit code."
-              onClick={() => chooseMethod('totp')}
-            />
             {availableMethods.includes('sms') && (
               <MethodButton
                 testid="admin-2fa-choose-sms"
@@ -321,7 +317,7 @@ export default function AdminLogin() {
               testid="admin-2fa-choose-backup"
               icon={<KeyRound className="w-5 h-5" />}
               title="Use a backup code"
-              sub="Enter one of the 10 recovery codes you saved when you set up 2FA."
+              sub="Enter one of the 10 recovery codes you saved."
               onClick={() => chooseMethod('backup')}
             />
           </div>
